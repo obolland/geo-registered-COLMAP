@@ -10,4 +10,5 @@ __pycache__/
 *.pyzw
 *.pyzwz
 *.pyzwzw
-*.pyzwzwzw
+*.pyzwzwzw.DS_Store
+*.DS_Store
