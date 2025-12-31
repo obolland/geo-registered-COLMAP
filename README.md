@@ -168,7 +168,81 @@ This model is now:
 
 ---
 
-## Step 6 — Train Splatfacto (Metric, ENU-Preserving)
+## Step 6 — Generate `path.json`
+
+Generate a JSON file that contains the ENU path for the GPX track.
+This will be used in app during runtime to position the rider in the world.
+
+```bash
+./venv/bin/python generate_path_json.py \
+  --ref_images dataset/keyframes/world_alignment/ref_images.txt \
+  --output dataset/keyframes/world_alignment/path.json
+```
+
+### Output
+
+```json
+{
+  "frame": "ENU",
+  "units": "meters",
+  "points": [ {"e":..., "n":..., "u":...}, ... ]
+}
+```
+
+Coordinates are **ENU meters**.
+
+---
+
+## Step 7.5 — Generate `tile_meta.json` (not sure if this is needed yet)
+
+Generate a JSON file that contains the metadata for the tile and the local path.
+This will be used in app during runtime to position the rider in the world (probably, not sure yet)
+
+```bash
+./venv/bin/python generate_tile_meta.py \
+  --path_json dataset/keyframes/world_alignment/path.json \
+  --ref_images_txt dataset/keyframes/world_alignment/ref_images.txt \
+  --output dataset/keyframes/world_alignment/tile_meta.json \
+  --lookahead_m 2 \
+  --write_local_path dataset/keyframes/world_alignment/path_local.json \
+```
+
+### Output
+
+path_local.json:
+```json
+{
+  "frame": "ENU_LOCAL",
+  "units": "meters",
+  "origin_enu": [E, N, U],
+  "origin_ref_image": "IMG_1234.jpg",
+  "points": [ {"e":..., "n":..., "u":...}, ... ]
+}
+```
+
+tile_meta.json:
+```json
+{
+  "tile_id": "tile_0",
+  "frame": "ENU",
+  "units": "meters",
+  "origin_method": "ref_images_first_line",
+  "origin_ref_image": "IMG_1234.jpg",
+  "origin_enu": [E, N, U],
+  "path_length_m": 100.0,
+  "lookahead_m": 2.0,
+  "forward_enu_unit": [E, N, U],
+  "heading_bearing_deg": 0.0,
+  "bounds_enu": [E_min, E_max, N_min, N_max, U_min, U_max],
+  "bounds_local": [E_min, E_max, N_min, N_max, U_min, U_max],
+  "inputs": {
+    "path_json": "dataset/keyframes/world_alignment/path.json",
+    "ref_images_txt": "dataset/keyframes/world_alignment/ref_images.txt"
+  }
+}
+```
+
+## Step 7 — Train Splatfacto (Metric, ENU-Preserving)
 
 ### Swap Aligned Model into Place
 
@@ -185,6 +259,16 @@ ns-train splatfacto colmap \
   --orientation_method none \
   --center_method none \
   --auto_scale_poses False
+```
+
+---
+
+## Step 8 — Convert .PLY output to .SOG using splatTransform CLI tool (Compresses the point cloud, reduces file size dramatically)
+
+```bash
+splatTransform \
+  --input dataset/keyframes/colmap/sparse/0_enu/points3D.ply \
+  --output dataset/keyframes/colmap/sparse/0_enu/points3D.sog
 ```
 
 ---
