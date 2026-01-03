@@ -2,7 +2,18 @@
 
 This pipeline produces a **metrically scaled, ENU-aligned COLMAP reconstruction** suitable for training **Splatfacto** *without post-hoc scaling artifacts*.
 
-The final output is a COLMAP model in **true meters**, aligned to a **GPX track**, which **Splatfacto preserves during training**.
+The final output is:
+
+- A COLMAP model in **true meters**, aligned to a **GPX track**
+- A Gaussian splat representation that **preserves metric scale**
+- A **camera-centers path** that acts as ground truth for:
+  - rider motion
+  - distance
+  - gradient
+  - progress
+- A **tile manifest** suitable for real-time engines (WebXR / VR / game engines)
+
+This pipeline is designed to scale cleanly from a **single proof-of-concept tile** to **multi-tile routes** without architectural changes.
 
 ---
 
@@ -10,30 +21,31 @@ The final output is a COLMAP model in **true meters**, aligned to a **GPX track*
 
 ```text
 dataset/
-├── images/                         # Input images
-├── gpx/track.gpx                   # Input GPX track
+├── images/                         # Input images (with EXIF timestamps)
+├── gpx/
+│   └── track.gpx                   # Input GPX track (timestamped)
 ├── keyframes/
 │   ├── colmap/
 │   │   └── sparse/
-│   │       └── 0/                  # Raw COLMAP output
-│   └── world_alignment/            # Alignment metadata
+│   │       └── 0/                  # COLMAP reconstruction (swapped to ENU later)
+│   └── world_alignment/            # Alignment + runtime metadata
 ```
 
 ---
 
 ## Step 0 — Prerequisites
 
-* Images contain valid **EXIF timestamps**
-* GPX timestamps **overlap image capture time**
-* COLMAP is installed and available on `PATH`
-* Nerfstudio virtual environment is active
+- Images contain valid **EXIF timestamps**
+- GPX timestamps **overlap image capture time**
+- COLMAP installed and available on `PATH`
 
 ---
 
 ## Step 1 — Run COLMAP Reconstruction (Raw, Arbitrary Scale)
 
 Run COLMAP normally on the images.
-**Do not attempt to scale or geo-register at this stage.**
+
+> ❌ Do **not** attempt to scale, orient, or geo-register here.
 
 ```bash
 ./run_colmap_reconstruction.sh dataset/images
@@ -50,17 +62,23 @@ dataset/keyframes/colmap/sparse/0/
 
 ---
 
-## Step 2 — Convert GPX → ENU (Timestamped)
+## Step 2 — Convert GPX → ENU (Raw, Timestamp-Preserved) + ENU Origin Metadata
 
 Convert the GPX track into **ENU coordinates** while preserving timestamps.
 
+The **ENU origin is the first GPX trackpoint**.  
+This origin is a **coordinate reference only**, not the start of the ride.
+
 ```bash
-node gpx_to_enu_raw.js \
-  dataset/gpx/track.gpx \
-  dataset/keyframes/world_alignment/gpx_enu_raw.json
+./venv/bin/python gpx_to_enu_raw.py \
+  --input dataset/gpx/track.gpx \
+  --output dataset/keyframes/world_alignment/gpx_enu_raw.json \
+  --output_origin dataset/keyframes/world_alignment/enu_origin.json
 ```
 
-### Output
+### Outputs
+
+#### `gpx_enu_raw.json`
 
 ```json
 [
@@ -69,7 +87,30 @@ node gpx_to_enu_raw.js \
 ]
 ```
 
-Coordinates are in **meters**, relative to the first GPX point.
+Coordinates are **ENU meters**, relative to the GPX origin.
+
+#### `enu_origin.json`
+
+```json
+{
+  "frame": "ENU",
+  "origin": {
+    "lat_deg": 51.507412,
+    "lon_deg": -0.127823,
+    "alt_m": 34.2
+  },
+  "wgs84": {
+    "a": 6378137.0,
+    "f": 0.0033528106647474805
+  },
+  "notes": "ENU origin corresponds to first GPX trackpoint"
+}
+```
+
+This metadata is not required for rendering, but is critical for:
+- future **Strava / GPX export**
+- map overlays
+- debugging and sanity checks across tiles
 
 ---
 
@@ -81,6 +122,7 @@ Extract camera centers from COLMAP and pair them with image EXIF timestamps.
 ./venv/bin/python extract_colmap_poses_with_timestamps.py \
   --colmap dataset/keyframes/colmap/sparse/0 \
   --images dataset/images \
+  --camera_tz Europe/London \
   --output dataset/keyframes/world_alignment/colmap_camera_poses.json
 ```
 
@@ -93,19 +135,18 @@ Extract camera centers from COLMAP and pair them with image EXIF timestamps.
 ]
 ```
 
+Camera centers are still in **arbitrary COLMAP space** at this point.
+
 ---
 
-## Step 4 — Generate `ref_images.txt`
+## Step 4 — Generate `ref_images.txt` (COLMAP ↔ GPS Alignment)
 
 Create the reference file for COLMAP geo-registration.
 
 This step:
-
-* Interpolates GPX to each image timestamp
-* Optionally smooths GPS noise
-* Automatically estimates camera ↔ GPS time offset (Δt)
-
-### Recommended First Run (Minimal Smoothing)
+- interpolates GPX ENU positions to each image timestamp
+- optionally smooths GPS noise
+- automatically estimates **Δt** (camera ↔ GPS clock offset)
 
 ```bash
 ./venv/bin/python generate_ref_images_txt.py \
@@ -130,9 +171,9 @@ Coordinates are **ENU meters**.
 
 ---
 
-## Step 5 — Geo-Register COLMAP into ENU Meters
+## Step 5 — Geo-Register COLMAP into Metric ENU Space
 
-Use COLMAP’s built-in `model_aligner` to transform the reconstruction.
+Use COLMAP’s `model_aligner` to transform the reconstruction.
 
 ```bash
 colmap model_aligner \
@@ -140,15 +181,8 @@ colmap model_aligner \
   --output_path dataset/keyframes/colmap/sparse/0_enu \
   --ref_images_path dataset/keyframes/world_alignment/ref_images.txt \
   --ref_is_gps 0 \
+  --alignment_type custom \
   --alignment_max_error 3
-```
-
-### Successful Output Looks Like
-
-```text
-=> Using N reference images
-=> Alignment error: ~1 m
-=> Alignment succeeded
 ```
 
 ### Result
@@ -160,23 +194,33 @@ dataset/keyframes/colmap/sparse/0_enu/
 └── points3D.bin
 ```
 
-This model is now:
-
-* **Metrically scaled**
-* **ENU oriented**
-* **Globally consistent**
+The model is now:
+- **metrically scaled**
+- **ENU oriented**
+- **globally consistent**
 
 ---
 
-## Step 6 — Generate `path.json`
+## Step 6 — Generate `path_cam.json` (Ground Truth Motion)
 
-Generate a JSON file that contains the ENU path for the GPX track.
-This will be used in app during runtime to position the rider in the world.
+Generate a **camera-centers path** from the aligned COLMAP model.
+
+This becomes the **single source of truth** for:
+- rider position
+- distance traveled
+- gradient
+- progress %
 
 ```bash
-./venv/bin/python generate_path_json.py \
-  --ref_images dataset/keyframes/world_alignment/ref_images.txt \
-  --output dataset/keyframes/world_alignment/path.json
+./venv/bin/python generate_path_cam_from_aligned_colmap.py \
+  --colmap_model dataset/keyframes/colmap/sparse/0_enu \
+  --images_dir dataset/images \
+  --output dataset/keyframes/world_alignment/path_cam.json \
+  --resample_m 0.5 \
+  --smooth_window_m 5 \
+  --grade_window_m 10 \
+  --drop_teleports_m 5 \
+  --print_report
 ```
 
 ### Output
@@ -185,85 +229,82 @@ This will be used in app during runtime to position the rider in the world.
 {
   "frame": "ENU",
   "units": "meters",
-  "points": [ {"e":..., "n":..., "u":...}, ... ]
+  "source": "colmap_aligned_camera_centers",
+  "resample_m": 0.5,
+  "smooth_window_m": 5,
+  "grade_window_m": 10,
+  "points": [
+    { "s": 0.0, "e": ..., "n": ..., "u": ..., "grade_pct": ... },
+    ...
+  ]
 }
 ```
 
-Coordinates are **ENU meters**.
+Notes:
+- `s` = cumulative distance along the route
+- `grade_pct` = windowed Δu / Δs (stable)
+- Route start = **first camera**, not first GPX point
 
 ---
 
-## Step 7.5 — Generate `tile_meta.json` (not sure if this is needed yet)
+## Step 7 — Generate `tile_manifest.json`
 
-Generate a JSON file that contains the metadata for the tile and the local path.
-This will be used in app during runtime to position the rider in the world (probably, not sure yet)
+Create a runtime manifest describing one or more tiles.
+
+For the POC, this will usually be a single tile.
 
 ```bash
-./venv/bin/python generate_tile_meta.py \
-  --path_json dataset/keyframes/world_alignment/path.json \
-  --ref_images_txt dataset/keyframes/world_alignment/ref_images.txt \
-  --output dataset/keyframes/world_alignment/tile_meta.json \
-  --lookahead_m 2 \
-  --write_local_path dataset/keyframes/world_alignment/path_local.json \
+./venv/bin/python generate_tile_manifest.py \
+  --path_cam dataset/keyframes/world_alignment/path_cam.json \
+  --output dataset/keyframes/world_alignment/tile_manifest.json \
+  --tile_id tile_000 \
+  --splat tile_000/tile.sog \
+  --path tile_000/path_cam.json \
+  --enu_origin_ref world_alignment/enu_origin.json \
+  --yaw_rad 0.0 \
+  --print_report
 ```
 
 ### Output
 
-path_local.json:
 ```json
 {
-  "frame": "ENU_LOCAL",
-  "units": "meters",
-  "origin_enu": [E, N, U],
-  "origin_ref_image": "IMG_1234.jpg",
-  "points": [ {"e":..., "n":..., "u":...}, ... ]
-}
-```
-
-tile_meta.json:
-```json
-{
-  "tile_id": "tile_0",
   "frame": "ENU",
   "units": "meters",
-  "origin_method": "ref_images_first_line",
-  "origin_ref_image": "IMG_1234.jpg",
-  "origin_enu": [E, N, U],
-  "path_length_m": 100.0,
-  "lookahead_m": 2.0,
-  "forward_enu_unit": [E, N, U],
-  "heading_bearing_deg": 0.0,
-  "bounds_enu": [E_min, E_max, N_min, N_max, U_min, U_max],
-  "bounds_local": [E_min, E_max, N_min, N_max, U_min, U_max],
-  "inputs": {
-    "path_json": "dataset/keyframes/world_alignment/path.json",
-    "ref_images_txt": "dataset/keyframes/world_alignment/ref_images.txt"
-  }
+  "enu_origin_ref": "world_alignment/enu_origin.json",
+  "tiles": [
+    {
+      "tile_id": "tile_000",
+      "s_range": [0.0, 102.66],
+      "splat": "tile_000/tile.sog",
+      "path": "tile_000/path_cam.json",
+      "bounds_enu": { "e": [...], "n": [...], "u": [...] },
+      "yaw_rad": 0.0
+    }
+  ]
 }
 ```
 
-## Step 7 — Train Splatfacto (Metric, ENU-Preserving)
+---
 
-### Swap Aligned Model into Place
+## Step 8 — Train Splatfacto (Metric-Preserving)
+
+### Swap aligned model into place (so Nerfstudio reads ENU cameras)
 
 ```bash
 mv dataset/keyframes/colmap/sparse/0 dataset/keyframes/colmap/sparse/0_orig
 mv dataset/keyframes/colmap/sparse/0_enu dataset/keyframes/colmap/sparse/0
 ```
 
-### Train with Pose Normalization Disabled
+### Train with pose normalisation disabled
 
 ```bash
-ns-train splatfacto colmap \
-  --data dataset/keyframes \
-  --orientation_method none \
-  --center_method none \
-  --auto_scale_poses False
+ns-train splatfacto colmap   --data dataset/keyframes   --orientation_method none   --center_method none   --auto_scale_poses False
 ```
 
 ---
 
-## Step 8 — Convert .PLY output to .SOG using splatTransform CLI tool (Compresses the point cloud, reduces file size dramatically)
+## Step 9 — Convert .PLY output to .SOG using splatTransform CLI tool (Compresses the point cloud, reduces file size dramatically)
 
 ```bash
 splatTransform \
@@ -273,21 +314,22 @@ splatTransform \
 
 ---
 
-## Final Result
+## Final Runtime Inputs
 
-* Splats are trained **directly in ENU meters**
-* **No post-hoc scaling** required
-* **No visual sparsity**
-* Correct real-world distances and elevations
-* Tiles align consistently
-* Ready for **VR / game engine** use
+Your app runtime typically consumes:
+
+- `tile_manifest.json`
+- each tile’s `tile.sog`
+- each tile’s `path_cam.json`
+- (optional) `enu_origin.json` for map/export features
 
 ---
 
 ## Key Rules (Do Not Skip)
 
-❌ **Do not scale splats after training**
-❌ **Do not allow Splatfacto to auto-scale or re-center**
+❌ **Do not scale splats after training**  
+❌ **Do not allow Splatfacto to auto-scale or re-center**  
 
-✅ **Always align COLMAP before training**
-✅ **Use interpolation + Δt calibration for GPS**
+✅ **Always align COLMAP before training**  
+✅ **Use interpolation + Δt calibration for GPS**  
+✅ **Use `path_cam.json` (aligned camera centers) as in-engine ground truth for motion + grade**

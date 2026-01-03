@@ -6,6 +6,7 @@ Usage:
   ./venv/bin/python extract_colmap_poses_with_timestamps.py \
       --colmap keyframes/colmap/sparse/0 \
       --images keyframes/images \
+      --camera_tz Europe/London \
       --output colmap_camera_poses.json
 """
 
@@ -17,6 +18,7 @@ import numpy as np
 from PIL import Image
 from PIL.ExifTags import TAGS
 import struct
+from zoneinfo import ZoneInfo
 
 # -------------------------------
 # COLMAP binary reader
@@ -74,21 +76,37 @@ def qvec2rotmat(qvec):
 # EXIF timestamp reader
 # -------------------------------
 
-def get_image_timestamp(image_path: Path) -> float:
+def get_image_timestamp(image_path, camera_tz="Europe/London") -> float:
     img = Image.open(image_path)
     exif = img._getexif()
-
     if not exif:
         raise ValueError(f"No EXIF in {image_path.name}")
 
     exif_data = {TAGS.get(k, k): v for k, v in exif.items()}
-    time_str = exif_data.get("DateTimeOriginal") or exif_data.get("DateTime")
 
-    if not time_str:
+    dt_str = exif_data.get("DateTimeOriginal") or exif_data.get("DateTime")
+    if not dt_str:
         raise ValueError(f"No DateTimeOriginal in {image_path.name}")
 
-    dt = datetime.strptime(time_str, "%Y:%m:%d %H:%M:%S")
-    return dt.timestamp()
+    # Parse base datetime
+    dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+
+    # Sub-second (milliseconds)
+    subsec = exif_data.get("SubSecTimeOriginal") or exif_data.get("SubSecTime")
+    if subsec:
+        try:
+            frac = float("0." + subsec)
+            dt = dt.replace(microsecond=int(frac * 1e6))
+        except Exception:
+            pass  # safe to ignore malformed subsec
+
+    # Attach camera timezone and convert to UTC
+    tz = ZoneInfo(camera_tz)
+    dt = dt.replace(tzinfo=tz)
+    dt_utc = dt.astimezone(ZoneInfo("UTC"))
+
+    return dt_utc.timestamp()
+
 
 # -------------------------------
 # Main
