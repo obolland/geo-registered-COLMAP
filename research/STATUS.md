@@ -55,3 +55,13 @@ All four files are complete and committed.
 - Claude red team done: `research/design-challenge-claude.md` (synthesis, section 5 lists proposed edits), raw panel in `research/redteam-claude/`.
 - Deepseek peer session ("splat pipeline deepseek") is red-teaming independently into `research/design-challenge-deepseek.md` (uncommitted until this session commits it).
 - Deepseek review committed. Merged: `research/design-challenge-merged.md` (section 5 = decisions awaiting Olly). Next: Olly answers, then edit `docs/OUTPUT-DESIGN.md` to v0.2.
+
+## Olly's answers to the merged review (2026-11-12)
+
+- Delivery: aim for streaming first; keep download-before-ride as an option, not the plan.
+- Rear view: MVP is forward gaze only (cockpit rest frame); rear-facing cameras come after the MVP.
+- Corridor: one capture pass only, so about ±1 m; ±1 m is fine for the MVP. Experiment later with wider (ideally side to side on small roads), within reason.
+- Route scope: agreed that 20-80 km routes are multi-session builds, with a go/no-go after field test 2 costs are known.
+- Field test 2: Olly can include a second session over part of the route and a deliberate lateral pass; discuss details before he goes.
+- Refresh rate: Olly asked which is less nauseating and whether it is configurable (answer: higher and stable is better; it is app-selectable on Quest, so it is a runtime budget, not a pipeline decision).
+- Headset: Olly has none and will buy one for development.
