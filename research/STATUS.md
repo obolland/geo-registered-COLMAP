@@ -76,4 +76,5 @@ All four files are complete and committed.
 ## Build progress (branch `pipeline/track1`)
 
 - Slice 0 done (review: `research/reviews/slice0-review.md`, fixes committed).
-- Slice 1 done (review: `research/reviews/slice1-review.md`, fixes committed). Next: slice 2, session ingest.
+- Slice 1 done (review: `research/reviews/slice1-review.md`, fixes committed).
+- Slice 2 done (review: `research/reviews/slice2-review.md`, fixes committed). Logger counter policy: `pulses_lost` is an error, the rest are warnings (their effects are checked in the data). Next: slice 3, photo ingest.
