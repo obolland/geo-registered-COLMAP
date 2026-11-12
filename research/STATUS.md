@@ -65,3 +65,10 @@ All four files are complete and committed.
 - Field test 2: Olly can include a second session over part of the route and a deliberate lateral pass; discuss details before he goes.
 - Refresh rate: Olly asked which is less nauseating and whether it is configurable (answer: higher and stable is better; it is app-selectable on Quest, so it is a runtime budget, not a pipeline decision).
 - Headset: Olly has none and will buy one for development.
+
+## Plan approval (2026-11-12)
+
+- Track 1 plan (`docs/PLAN-TRACK1.md`) approved: package `georoute`, Python 3.12, COLMAP upgrade to 4.2.1 allowed.
+- Warm-up photos: dropped (they still take part in pulse matching, then are filtered out).
+- Photos without RTK fixed (my decision, Olly delegated): keep every capture photo for reconstruction; each image's position prior carries its own uncertainty from hAcc/vAcc (float = loose prior, no fix = no prior), so SfM bridges float stretches between fixed ones; QA gates on long non-fixed runs.
+- Real-time RTK never revises past epochs. PPK can: field test 1 `rtcm.bin` contains MSM4 for GPS/GLO/GAL/BDS (1074/1084/1094/1124) plus 1005/1033/1230, i.e. full base observations, and `receiver.ubx` has RAWX/SFRBX. A forward-plus-backward PPK pass (RTKLIB) is therefore feasible and becomes an optional ingest stage after slice 4. Caveat: `LOCAL` may be a virtual base whose 1005 position changes on reconnect; handle per connection.
