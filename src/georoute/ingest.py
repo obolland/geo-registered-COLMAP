@@ -9,6 +9,7 @@ from georoute import __version__
 from georoute.geodesy import LocalFrame, lla_to_ecef
 from georoute.photos import match_photos, read_photos
 from georoute.report import session_report
+from georoute.rig import Rig
 from georoute.session import Session, load_session
 from georoute.trajectory import antenna_positions, exposure_mid
 
@@ -30,7 +31,9 @@ def session_frame(session: Session) -> LocalFrame:
     )
 
 
-def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> dict:
+def ingest(
+    session_dir, images_root, out_dir, curtain_travel_s: float | None = None, rig: Rig | None = None
+) -> dict:
     """Writes report.json always (with the refusal reason if refused), and images.json and track.png only
     when every capture photo was timed and positioned."""
     out = Path(out_dir)
@@ -38,12 +41,14 @@ def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> 
     for stale in ("images.json", "track.png"):
         (out / stale).unlink(missing_ok=True)
     report: dict = {}
+    if curtain_travel_s is None:
+        curtain_travel_s = rig.curtain_travel_s if rig else 0.0
     try:
         session = load_session(session_dir)
         report["session"] = session_report(session)
         if report["session"]["errors"]:
             raise IngestError("session integrity errors: " + "; ".join(report["session"]["errors"]))
-        images, frame, summary = _position_captures(session, images_root, curtain_travel_s)
+        images, frame, summary = _position_captures(session, images_root, curtain_travel_s, rig)
     except Exception as e:
         report["refused"] = str(e)
         _write_json(out / "report.json", report)
@@ -58,6 +63,7 @@ def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> 
             "datum": session.datum,
             "nav_period_s": session.nav_period_s,
             "curtain_travel_s": curtain_travel_s,
+            "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured} if rig else None,
             "frame": {
                 "lat_deg": frame.lat_deg,
                 "lon_deg": frame.lon_deg,
@@ -78,8 +84,8 @@ def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> 
     return summary
 
 
-def _position_captures(session: Session, images_root, curtain_travel_s: float):
-    matches = match_photos(session, read_photos(images_root))
+def _position_captures(session: Session, images_root, curtain_travel_s: float, rig: Rig | None):
+    matches = match_photos(session, *photo_sources(images_root, rig))
     captures = [m for m in matches if m.pulse.kind == "capture"]
     delays = [m.pulse.delays_us[m.photo.camera] for m in captures]
     t_mid = np.array(
@@ -121,6 +127,15 @@ def _position_captures(session: Session, images_root, curtain_travel_s: float):
         "flagged": {f: sum(f in i["flags"] for i in images) for f in ("not-fixed", "no-3d-fix", "gap")},
     }
     return images, frame, summary
+
+
+def photo_sources(images_root, rig: Rig | None):
+    """Photos per camera and the expected body serials, from the rig's folders when a rig is given."""
+    if rig is None:
+        return read_photos(images_root), None
+    folders = {c.index: c.folder for c in rig.cameras}
+    serials = {c.index: c.serial for c in rig.cameras if c.serial}
+    return read_photos(images_root, folders), serials
 
 
 def _track_ecef(session: Session) -> np.ndarray:

@@ -121,3 +121,35 @@ def test_curtain_travel_option_shifts_mid_exposure(session_dir, tmp_path):
     )
     a, b = (json.loads((tmp_path / x / "images.json").read_text())["images"][0] for x in "ab")
     assert a["t_mid_gps_s"] - b["t_mid_gps_s"] == pytest.approx(0.002, abs=1e-6)
+
+
+@needs_exiftool
+def test_ingest_takes_folders_serials_and_curtain_travel_from_the_rig(session_dir, tmp_path):
+    rig_text = (Path(__file__).parents[1] / "rigs" / "handlebar-4cam.example.toml").read_text()
+    rig_text = rig_text.replace('folder = "cam0"', 'folder = "front-left"').replace(
+        "curtain_travel_ms = 0.0", "curtain_travel_ms = 4.0"
+    )
+    (tmp_path / "rig.toml").write_text(rig_text)
+    _stubs_for(load_session(session_dir), tmp_path / "staging")
+    (tmp_path / "images").mkdir()
+    (tmp_path / "staging" / "cam0").rename(tmp_path / "images" / "front-left")
+    assert (
+        main(
+            [
+                "ingest",
+                str(session_dir),
+                str(tmp_path / "images"),
+                "--out",
+                str(tmp_path / "out"),
+                "--rig",
+                str(tmp_path / "rig.toml"),
+            ]
+        )
+        == 0
+    )
+    data = json.loads((tmp_path / "out" / "images.json").read_text())
+    assert data["curtain_travel_s"] == pytest.approx(0.004)
+    assert data["rig"]["sha256"] and data["images"][0]["path"].startswith("front-left/")
+    assert (
+        main(["match", str(session_dir), str(tmp_path / "images"), "--rig", str(tmp_path / "rig.toml")]) == 0
+    )

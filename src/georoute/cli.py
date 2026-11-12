@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 
 from georoute import __version__
-from georoute.ingest import IngestError, ingest
-from georoute.photos import MatchError, match_photos, read_photos
+from georoute.ingest import IngestError, ingest, photo_sources
+from georoute.photos import MatchError, match_photos
 from georoute.report import format_report, session_report
 from georoute.rig import RigError, load_rig
 from georoute.session import SessionError, load_session
@@ -25,14 +25,18 @@ def build_parser() -> argparse.ArgumentParser:
     match = sub.add_parser("match", help="match each camera's photos to the session's pulses")
     match.add_argument("session_dir", type=Path)
     match.add_argument("images_root", type=Path, help="folder holding cam0 .. cam3")
-    match.epilog = "exit status: 0 all matched, 1 mismatch, 2 session unreadable"
+    match.add_argument("--rig", type=Path, help="rig config giving camera folders and body serials")
+    match.epilog = "exit status: 0 all matched, 1 mismatch or bad rig, 2 session unreadable"
     run = sub.add_parser("ingest", help="time and position every capture photo")
     run.add_argument("session_dir", type=Path)
     run.add_argument("images_root", type=Path, help="folder holding cam0 .. cam3")
     run.add_argument(
         "--out", type=Path, required=True, help="output folder for images.json, report.json, track.png"
     )
-    run.add_argument("--curtain-travel-ms", type=float, default=0.0)
+    run.add_argument("--rig", type=Path, help="rig config giving camera folders, serials and curtain travel")
+    run.add_argument(
+        "--curtain-travel-ms", type=float, help="overrides the rig's value (default 0 without a rig)"
+    )
     run.epilog = "exit status: 0 ok, 1 refused (integrity, matching or positioning), 2 session unreadable"
     rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
     rig.add_argument("rig_toml", type=Path)
@@ -73,8 +77,8 @@ def _match(args) -> int:
         print(f"ERROR {e}", file=sys.stderr)
         return 2
     try:
-        matches = match_photos(session, read_photos(args.images_root))
-    except MatchError as e:
+        matches = match_photos(session, *photo_sources(args.images_root, _rig(args)))
+    except (MatchError, RigError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     for camera in sorted({m.photo.camera for m in matches}):
@@ -86,11 +90,12 @@ def _match(args) -> int:
 
 def _ingest(args) -> int:
     try:
-        summary = ingest(args.session_dir, args.images_root, args.out, args.curtain_travel_ms / 1000)
+        curtain = None if args.curtain_travel_ms is None else args.curtain_travel_ms / 1000
+        summary = ingest(args.session_dir, args.images_root, args.out, curtain, _rig(args))
     except SessionError as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 2
-    except (IngestError, MatchError, TrajectoryError) as e:
+    except (IngestError, MatchError, TrajectoryError, RigError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     flagged = ", ".join(f"{k} {v}" for k, v in summary["flagged"].items())
@@ -125,3 +130,7 @@ def _rig_check(args) -> int:
             f"looking along {axis.round(3).tolist()} in the rig frame"
         )
     return 0
+
+
+def _rig(args):
+    return load_rig(args.rig) if args.rig else None
