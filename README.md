@@ -25,4 +25,4 @@ Python is pinned to 3.12 to match the CUDA training stack on the GPU machine. `p
 
 ## Legacy POC
 
-`align_colmap_to_gpx_enu/` holds the original proof-of-concept scripts. The GPX and EXIF-timing workflow is being retired (slice 1); `generate_path_cam_from_aligned_colmap.py` and `generate_tile_manifest.py` remain until the v0.2 route package replaces them (slice 7). Don't build on them.
+`align_colmap_to_gpx_enu/` holds what is left of the proof of concept: `run_colmap_reconstruction.sh` (replaced in slice 6), `generate_path_cam_from_aligned_colmap.py` and `generate_tile_manifest.py` (replaced by the v0.2 route package in slice 7). The GPX and EXIF-timing workflow has been removed. Don't build on these.
