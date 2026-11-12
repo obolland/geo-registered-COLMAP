@@ -77,4 +77,5 @@ All four files are complete and committed.
 
 - Slice 0 done (review: `research/reviews/slice0-review.md`, fixes committed).
 - Slice 1 done (review: `research/reviews/slice1-review.md`, fixes committed).
-- Slice 2 done (review: `research/reviews/slice2-review.md`, fixes committed). Logger counter policy: `pulses_lost` is an error, the rest are warnings (their effects are checked in the data). Next: slice 3, photo ingest.
+- Slice 2 done (review: `research/reviews/slice2-review.md`, fixes committed). Logger counter policy: `pulses_lost` is an error, the rest are warnings (their effects are checked in the data). 
+- Slice 3 done (review: `research/reviews/slice3-review.md`, fixes committed). Known residual risk: a missing first photo plus an extra last photo with no file-number gap and repeating intervals is undetectable (documented in photos.py). Next: slice 4.
