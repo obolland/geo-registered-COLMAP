@@ -3,7 +3,8 @@
 #
 # Rig frame: origin at the reference point, x to the rider's right, y forward, z up.
 # Camera orientation: yaw turns the lens left (+) or right (-) of straight ahead, pitch tilts it up (+),
-# roll turns the camera clockwise (+) as seen from behind it. All in degrees.
+# roll turns the camera clockwise (+) as seen from behind it. All in degrees, applied as yaw, then pitch,
+# then roll (rig z, then x, then y).
 
 schema = "georoute.rig/1.0.0"
 name = "handlebar-4x100d"
@@ -15,7 +16,7 @@ height_above_road_m = 1.05
 
 [antenna]
 arp_in_rig_m = [0.0, 0.0, 0.20]
-# ANN-MB3 phase-centre offset above its reference point; no primary source yet, so measured as zero.
+# ANN-MB3 phase-centre offset above its reference point: assumed zero until measured or cited.
 phase_centre_offset_m = [0.0, 0.0, 0.0]
 
 [timing]

@@ -53,6 +53,7 @@ def ingest(
         report["refused"] = str(e)
         _write_json(out / "report.json", report)
         raise
+    summary["rig_measured"] = rig.measured if rig else None
     report["ingest"] = summary
     _write_json(
         out / "images.json",

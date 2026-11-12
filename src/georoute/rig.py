@@ -6,6 +6,7 @@ COLMAP can't model the antenna, so camera position priors are derived here:
 """
 
 import hashlib
+import math
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -71,7 +72,10 @@ class Rig:
     sha256: str
 
     def camera(self, index: int) -> Camera:
-        return next(c for c in self.cameras if c.index == index)
+        for c in self.cameras:
+            if c.index == index:
+                return c
+        raise RigError(f"rig {self.name} has no camera {index}")
 
     def rig_from_camera(self, index: int) -> np.ndarray:
         return rig_from_camera(*self.camera(index).yaw_pitch_roll_deg)
@@ -86,12 +90,13 @@ class Rig:
 
 
 def load_rig(path) -> Rig:
+    """The hash covers the file's bytes, so editing a comment changes it too."""
     path = Path(path)
-    raw = path.read_bytes()
     try:
+        raw = path.read_bytes()
         doc = tomllib.loads(raw.decode())
-    except tomllib.TOMLDecodeError as e:
-        raise RigError(f"{path.name} is not valid TOML: {e}") from e
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        raise RigError(f"can't read rig config {path}: {e}") from e
     if doc.get("schema") != RIG_SCHEMA:
         raise RigError(f"{path.name} schema is {doc.get('schema')!r}, expected {RIG_SCHEMA}")
     _check_keys(doc, "")
@@ -99,20 +104,25 @@ def load_rig(path) -> Rig:
         if table not in doc:
             raise RigError(f"{path.name} is missing [{table}]")
         _check_keys(doc[table], table)
+    if not doc.get("camera"):
+        raise RigError(f"{path.name} has no cameras")
     cameras = []
-    for entry in doc.get("camera", []):
+    for entry in doc["camera"]:
         _check_keys(entry, "camera")
         cameras.append(_camera(entry))
     _check_unique(cameras)
     antenna = doc["antenna"]
     lever = _vector(antenna, "arp_in_rig_m", "antenna") + _vector(antenna, "phase_centre_offset_m", "antenna")
+    measured = doc.get("measured", False)
+    if not isinstance(measured, bool):
+        raise RigError(f"measured must be true or false, got {measured!r}")
     return Rig(
-        name=doc.get("name", path.stem),
-        measured=bool(doc.get("measured", False)),
+        name=str(doc.get("name", path.stem)),
+        measured=measured,
         cameras=tuple(sorted(cameras, key=lambda c: c.index)),
         lever_arm_m=lever,
-        reference_height_above_road_m=float(doc["reference"]["height_above_road_m"]),
-        curtain_travel_s=float(doc["timing"]["curtain_travel_ms"]) / 1000,
+        reference_height_above_road_m=_number(doc["reference"], "height_above_road_m", "reference", 0.0, 5.0),
+        curtain_travel_s=_number(doc["timing"], "curtain_travel_ms", "timing", 0.0, 50.0) / 1000,
         sha256=hashlib.sha256(raw).hexdigest(),
     )
 
@@ -123,83 +133,69 @@ def _check_keys(table: dict, name: str):
         raise RigError(f"unknown key {sorted(unknown)[0]} in {'[' + name + ']' if name else 'the top level'}")
 
 
-def _vector(table: dict, key: str, where: str, size: int = 3) -> np.ndarray:
+def _is_number(v) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _number(table: dict, key: str, where: str, low: float, high: float) -> float:
+    value = table.get(key)
+    if not _is_number(value) or not low <= value <= high:
+        raise RigError(f"{where} {key} must be a number from {low:g} to {high:g}, got {value!r}")
+    return float(value)
+
+
+def _vector(table: dict, key: str, where: str, limit: float = 10.0) -> np.ndarray:
     value = table.get(key)
     if (
         not isinstance(value, list)
-        or len(value) != size
-        or not all(isinstance(v, int | float) for v in value)
+        or len(value) != 3
+        or not all(_is_number(v) and abs(v) <= limit for v in value)
     ):
-        raise RigError(f"{where} {key} must be {size} numbers, got {value!r}")
+        raise RigError(f"{where} {key} must be 3 numbers within +-{limit:g}, got {value!r}")
     return np.array(value, float)
 
 
 def _camera(entry: dict) -> Camera:
     index = entry.get("index")
-    if not isinstance(index, int) or not 0 <= index < CAMERA_COUNT:
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < CAMERA_COUNT:
         raise RigError(f"camera index {index} is outside 0..{CAMERA_COUNT - 1}")
     where = f"camera {index}"
-    yaw, pitch, roll = _vector(entry, "yaw_pitch_roll_deg", where)
+    folder, serial = entry.get("folder", f"cam{index}"), entry.get("serial", "")
+    if not isinstance(folder, str) or not folder or Path(folder).name != folder or folder in (".", ".."):
+        raise RigError(f"{where} folder must be a plain folder name, got {folder!r}")
+    if not isinstance(serial, str):
+        raise RigError(f"{where} serial must be a quoted string (keeps leading zeros), got {serial!r}")
+    yaw, pitch, roll = _vector(entry, "yaw_pitch_roll_deg", where, limit=180.0)
     return Camera(
         index,
         str(entry.get("role", "")),
-        str(entry.get("folder", f"cam{index}")),
-        str(entry["serial"]) if entry.get("serial") else None,
-        _vector(entry, "position_in_rig_m", where),
-        (float(yaw), float(pitch), float(roll)),
+        folder,
+        serial or None,
+        _vector(entry, "position_in_rig_m", where, limit=2.0),
+        (yaw, pitch, roll),
     )
 
 
 def _check_unique(cameras: list[Camera]):
-    for attr, label in (("index", "camera index"), ("folder", "folder")):
-        values = [getattr(c, attr) for c in cameras]
-        for v in values:
-            if values.count(v) > 1:
-                raise RigError(
-                    f"{label} {v} is used twice" if attr == "folder" else f"{label} {v} appears twice"
-                )
-
-
-def _quaternion(r: np.ndarray) -> np.ndarray:
-    w = np.sqrt(max(0.0, 1 + r[0, 0] + r[1, 1] + r[2, 2])) / 2
-    x = np.copysign(np.sqrt(max(0.0, 1 + r[0, 0] - r[1, 1] - r[2, 2])) / 2, r[2, 1] - r[1, 2])
-    y = np.copysign(np.sqrt(max(0.0, 1 - r[0, 0] + r[1, 1] - r[2, 2])) / 2, r[0, 2] - r[2, 0])
-    z = np.copysign(np.sqrt(max(0.0, 1 - r[0, 0] - r[1, 1] + r[2, 2])) / 2, r[1, 0] - r[0, 1])
-    return np.array([w, x, y, z])
-
-
-def _matrix(q: np.ndarray) -> np.ndarray:
-    w, x, y, z = q / np.linalg.norm(q)
-    return np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
-        ]
-    )
-
-
-def slerp(times: np.ndarray, rotations: np.ndarray, query: np.ndarray) -> np.ndarray:
-    """Rotation matrices at query times, spherically interpolated between known (time, rotation) pairs."""
-    query = np.asarray(query, float)
-    if (query < times[0]).any() or (query > times[-1]).any():
-        raise RigError("attitude requested outside the known times")
-    out = []
-    for t in query:
-        i = min(int(np.searchsorted(times, t, side="right")) - 1, len(times) - 2)
-        q0, q1 = _quaternion(rotations[i]), _quaternion(rotations[i + 1])
-        if q0 @ q1 < 0:
-            q1 = -q1
-        u = (t - times[i]) / (times[i + 1] - times[i])
-        angle = np.arccos(np.clip(q0 @ q1, -1.0, 1.0))
-        if angle < 1e-12:
-            out.append(_matrix(q0))
-            continue
-        out.append(_matrix((np.sin((1 - u) * angle) * q0 + np.sin(u * angle) * q1) / np.sin(angle)))
-    return np.array(out)
+    for label, values in (
+        ("camera index", [c.index for c in cameras]),
+        ("folder", [c.folder for c in cameras]),
+        ("serial", [c.serial for c in cameras if c.serial]),
+    ):
+        repeated = sorted({v for v in values if values.count(v) > 1})
+        if repeated:
+            raise RigError(f"{label} {repeated[0]} is used by more than one camera")
 
 
 Aligner = Callable[[dict[str, np.ndarray]], dict[str, np.ndarray]]
+
+
+@dataclass(frozen=True)
+class RefinedPriors:
+    priors: dict[str, np.ndarray]
+    world_from_camera: dict[str, np.ndarray]
+    iterations: int
+    last_change_m: float
 
 
 def refine_priors(
@@ -208,10 +204,23 @@ def refine_priors(
     align: Aligner,
     tolerance_m: float = 1e-3,
     max_iterations: int = 5,
-) -> tuple[dict[str, np.ndarray], int]:
-    """Camera-centre priors per image. Starts from the antenna positions (off by at most the lever arm),
-    then repeatedly predicts each camera centre from the aligned camera rotation until the priors settle.
-    align(priors) returns world_from_camera rotations for the images it was given."""
+    min_lateral_spread_m: float = 1.0,
+) -> RefinedPriors:
+    """Camera-centre priors per image, each from that image's own antenna position and aligned rotation.
+    Starts from the antenna positions (off by at most the lever arm), then predicts each camera centre from
+    the aligned camera rotation until the priors settle. align(priors) returns world_from_camera rotations
+    for the images it was given.
+
+    On a straight ride the antenna track is a line, so rotation about it is unobservable from positions and
+    the lever arm can't be applied: that refuses rather than settling on a wrong answer."""
+    positions = np.array([a for _, a in antenna.values()], float)
+    spread = np.linalg.svd(positions - positions.mean(0), compute_uv=False) / np.sqrt(len(positions))
+    lateral = spread[1] if len(spread) > 1 else 0.0
+    if lateral < min_lateral_spread_m:
+        raise RigError(
+            f"the antenna track is too straight to align a rig to (lateral spread {lateral:.2f} m, "
+            f"need {min_lateral_spread_m} m)"
+        )
     priors = {name: np.asarray(a, float) for name, (_, a) in antenna.items()}
     for iteration in range(1, max_iterations + 1):
         world_from_camera = align(priors)
@@ -222,7 +231,7 @@ def refine_priors(
         change = max(np.linalg.norm(updated[n] - priors[n]) for n in priors)
         priors = updated
         if change < tolerance_m:
-            return priors, iteration
+            return RefinedPriors(priors, world_from_camera, iteration, float(change))
     raise RigError(
         f"camera priors did not settle within {max_iterations} iterations (last change {change:.4f} m)"
     )

@@ -99,6 +99,8 @@ def _ingest(args) -> int:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     flagged = ", ".join(f"{k} {v}" for k, v in summary["flagged"].items())
+    if summary.get("rig_measured") is False:
+        print("WARNING the rig config is marked unmeasured: its geometry is placeholder", file=sys.stderr)
     print(
         f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped); "
         f"flagged: {flagged}; written to {args.out}"

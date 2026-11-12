@@ -5,7 +5,7 @@ import pytest
 
 from georoute.alignment import umeyama
 from georoute.cli import main
-from georoute.rig import RigError, load_rig, refine_priors, rig_from_camera, slerp
+from georoute.rig import RigError, load_rig, refine_priors, rig_from_camera
 
 EXAMPLE = Path(__file__).parents[1] / "rigs" / "handlebar-4cam.example.toml"
 
@@ -38,8 +38,39 @@ def test_the_example_rig_loads_and_is_marked_unmeasured():
         (lambda t: t.replace("measured = false", "measured = false\nmesured = true"), "mesured"),
         (lambda t: t.replace("[timing]\ncurtain_travel_ms = 0.0\n", ""), "timing"),
         (lambda t: t.replace("index = 3", "index = 4"), "index 4"),
+        (lambda t: t.replace("measured = false", 'measured = "false"'), "measured"),
+        (lambda t: t.replace("curtain_travel_ms = 0.0", ""), "curtain_travel_ms"),
+        (lambda t: t.replace("curtain_travel_ms = 0.0", "curtain_travel_ms = -1.0"), "curtain_travel_ms"),
+        (
+            lambda t: t.replace("height_above_road_m = 1.05", 'height_above_road_m = "tall"'),
+            "height_above_road_m",
+        ),
+        (lambda t: t.split("[[camera]]")[0], "no cameras"),
+        (lambda t: t.replace("[0.15, 0.05, 0.0]", "[0.15, 0.05, nan]"), "position_in_rig_m"),
+        (lambda t: t.replace("[0.15, 0.05, 0.0]", "[0.15, true, 0.0]"), "position_in_rig_m"),
+        (lambda t: t.replace("[0.0, -10.0, 0.0]", "[0.0, -400.0, 0.0]"), "yaw_pitch_roll_deg"),
+        (lambda t: t.replace('folder = "cam1"', 'folder = "../cam1"'), "folder"),
+        (lambda t: t.replace('serial = ""', "serial = 12345", 1), "serial"),
     ],
-    ids=["dup-index", "dup-folder", "short-vector", "schema", "typo-key", "missing-table", "bad-index"],
+    ids=[
+        "dup-index",
+        "dup-folder",
+        "short-vector",
+        "schema",
+        "typo-key",
+        "missing-table",
+        "bad-index",
+        "string-bool",
+        "missing-curtain",
+        "negative-curtain",
+        "string-height",
+        "no-cameras",
+        "nan",
+        "bool-in-vector",
+        "pitch-400",
+        "folder-escape",
+        "integer-serial",
+    ],
 )
 def test_invalid_configs_refuse(tmp_path, edit, message):
     path = tmp_path / "rig.toml"
@@ -66,14 +97,6 @@ def test_camera_centre_from_antenna_and_attitude():
         expected = a + world_from_rig @ (cam.position_in_rig_m - rig.lever_arm_m)
         np.testing.assert_allclose(rig.camera_centre(cam.index, a, world_from_rig), expected)
     np.testing.assert_allclose(rig.reference_point(a, world_from_rig), a - world_from_rig @ rig.lever_arm_m)
-
-
-def test_slerp_interpolates_attitude():
-    r = slerp(np.array([0.0, 1.0]), np.stack([_rot_z(0), _rot_z(40)]), np.array([0.25, 1.0]))
-    np.testing.assert_allclose(r[0], _rot_z(10), atol=1e-12)
-    np.testing.assert_allclose(r[1], _rot_z(40), atol=1e-12)
-    with pytest.raises(RigError, match="outside"):
-        slerp(np.array([0.0, 1.0]), np.stack([_rot_z(0), _rot_z(40)]), np.array([1.5]))
 
 
 def _synthetic_ride(rig, n=60, speed=8.0):
@@ -105,6 +128,14 @@ def _aligner_for(rig, frames):
     return truth, align
 
 
+def test_missing_or_unreadable_files_are_rig_errors(tmp_path):
+    with pytest.raises(RigError, match="rig.toml"):
+        load_rig(tmp_path / "rig.toml")
+    (tmp_path / "rig.toml").write_bytes(b"\xff\xfe")
+    with pytest.raises(RigError, match="rig.toml"):
+        load_rig(tmp_path / "rig.toml")
+
+
 def test_first_pass_error_is_bounded_by_the_lever_arm_and_refinement_converges():
     rig = load_rig(EXAMPLE)
     frames = _synthetic_ride(rig)
@@ -114,9 +145,33 @@ def test_first_pass_error_is_bounded_by_the_lever_arm_and_refinement_converges()
     worst_arm = max(np.linalg.norm(c.position_in_rig_m - rig.lever_arm_m) for c in rig.cameras)
     assert max(np.linalg.norm(first[n] - truth[n]) for n in truth) <= worst_arm + 1e-9
 
-    priors, iterations = refine_priors(rig, antenna, align)
-    assert iterations <= 3
-    assert max(np.linalg.norm(priors[n] - truth[n]) for n in truth) < 1e-3
+    result = refine_priors(rig, antenna, align)
+    assert result.iterations <= 3 and result.last_change_m < 1e-3
+    assert max(np.linalg.norm(result.priors[n] - truth[n]) for n in truth) < 1e-3
+    assert set(result.world_from_camera) == set(truth)
+
+
+def test_antenna_noise_leaves_camera_priors_at_the_noise_level():
+    rig = load_rig(EXAMPLE)
+    frames = _synthetic_ride(rig)
+    truth, align = _aligner_for(rig, frames)
+    rng = np.random.default_rng(4)
+    antenna = {name: (cam, a + rng.normal(scale=0.02, size=3)) for name, cam, a, _ in frames}
+    result = refine_priors(rig, antenna, align, tolerance_m=5e-3)
+    errors = [np.linalg.norm(result.priors[n] - truth[n]) for n in truth]
+    assert np.percentile(errors, 95) < 0.06
+
+
+def test_a_straight_ride_cannot_reveal_the_lever_arm_and_refuses():
+    rig = load_rig(EXAMPLE)
+    frames = [
+        (f"cam{c.index}/IMG_{k:04d}.JPG", c.index, np.array([0.8 * k, 0.0, 1.25]), _rot_y(5.0))
+        for k in range(60)
+        for c in rig.cameras
+    ]
+    _, align = _aligner_for(rig, frames)
+    with pytest.raises(RigError, match="straight"):
+        refine_priors(rig, {name: (cam, a) for name, cam, a, _ in frames}, align)
 
 
 def test_rig_check_command(capsys):
