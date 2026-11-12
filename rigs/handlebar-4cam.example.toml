@@ -1,0 +1,54 @@
+# Rig config for the handlebar 4 x Canon 100D rig. PLACEHOLDER GEOMETRY: the rig isn't built yet, so every
+# number below must be measured before a real build (set measured = true once it is).
+#
+# Rig frame: origin at the reference point, x to the rider's right, y forward, z up.
+# Camera orientation: yaw turns the lens left (+) or right (-) of straight ahead, pitch tilts it up (+),
+# roll turns the camera clockwise (+) as seen from behind it. All in degrees.
+
+schema = "georoute.rig/1.0.0"
+name = "handlebar-4x100d"
+measured = false
+
+[reference]
+description = "top face of the V-slot bar, on the bike's centre line"
+height_above_road_m = 1.05
+
+[antenna]
+arp_in_rig_m = [0.0, 0.0, 0.20]
+# ANN-MB3 phase-centre offset above its reference point; no primary source yet, so measured as zero.
+phase_centre_offset_m = [0.0, 0.0, 0.0]
+
+[timing]
+curtain_travel_ms = 0.0
+
+[[camera]]
+index = 0
+role = "forward-left, tilted up"
+folder = "cam0"
+serial = ""
+position_in_rig_m = [-0.15, 0.05, 0.0]
+yaw_pitch_roll_deg = [0.0, 10.0, 0.0]
+
+[[camera]]
+index = 1
+role = "forward-right, tilted down"
+folder = "cam1"
+serial = ""
+position_in_rig_m = [0.15, 0.05, 0.0]
+yaw_pitch_roll_deg = [0.0, -10.0, 0.0]
+
+[[camera]]
+index = 2
+role = "left side, angled forward"
+folder = "cam2"
+serial = ""
+position_in_rig_m = [-0.30, 0.0, 0.0]
+yaw_pitch_roll_deg = [55.0, 0.0, 0.0]
+
+[[camera]]
+index = 3
+role = "right side, angled forward"
+folder = "cam3"
+serial = ""
+position_in_rig_m = [0.30, 0.0, 0.0]
+yaw_pitch_roll_deg = [-55.0, 0.0, 0.0]

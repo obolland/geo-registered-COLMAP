@@ -3,10 +3,13 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from georoute import __version__
 from georoute.ingest import IngestError, ingest
 from georoute.photos import MatchError, match_photos, read_photos
 from georoute.report import format_report, session_report
+from georoute.rig import RigError, load_rig
 from georoute.session import SessionError, load_session
 from georoute.trajectory import TrajectoryError
 
@@ -31,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--curtain-travel-ms", type=float, default=0.0)
     run.epilog = "exit status: 0 ok, 1 refused (integrity, matching or positioning), 2 session unreadable"
+    rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
+    rig.add_argument("rig_toml", type=Path)
     return parser
 
 
@@ -43,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         return _match(args)
     if args.command == "ingest":
         return _ingest(args)
+    if args.command == "rig-check":
+        return _rig_check(args)
     parser.print_help()
     return 0
 
@@ -91,4 +98,30 @@ def _ingest(args) -> int:
         f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped); "
         f"flagged: {flagged}; written to {args.out}"
     )
+    return 0
+
+
+def _rig_check(args) -> int:
+    try:
+        rig = load_rig(args.rig_toml)
+    except (RigError, OSError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    print(
+        f"rig {rig.name} ({'measured' if rig.measured else 'NOT MEASURED: placeholder geometry'}), "
+        f"sha256 {rig.sha256[:12]}"
+    )
+    print(
+        f"antenna lever arm (reference to phase centre) {rig.lever_arm_m.round(3).tolist()} m; "
+        f"reference {rig.reference_height_above_road_m} m above the road; "
+        f"curtain travel {rig.curtain_travel_s * 1000:g} ms"
+    )
+    for cam in rig.cameras:
+        arm = cam.position_in_rig_m - rig.lever_arm_m
+        axis = rig.rig_from_camera(cam.index)[:, 2]
+        print(
+            f"cam{cam.index} {cam.role!r} folder {cam.folder}, serial {cam.serial or 'unset'}: "
+            f"antenna-to-camera {arm.round(3).tolist()} m ({np.linalg.norm(arm):.3f} m), "
+            f"looking along {axis.round(3).tolist()} in the rig frame"
+        )
     return 0
