@@ -49,3 +49,9 @@ All four files are complete and committed.
 2. **Don't run the thinking skill to challenge the output design until Olly gives the go-ahead.**
 3. Plan track 1 (slices 0-5: repo hygiene, characterisation tests, session ingest, photo matching, exposure time and Hermite positions, rig config and lever arm). These need only the field test 1 sample.
 4. Push nothing without Olly's explicit go-ahead.
+
+## Design challenge (2026-11-12)
+
+- Claude red team done: `research/design-challenge-claude.md` (synthesis, section 5 lists proposed edits), raw panel in `research/redteam-claude/`.
+- Deepseek peer session ("splat pipeline deepseek") is red-teaming independently into `research/design-challenge-deepseek.md` (uncommitted until this session commits it).
+- Next: merge both reviews into one set of design changes, agree with Olly, then edit `docs/OUTPUT-DESIGN.md` to v0.2.
