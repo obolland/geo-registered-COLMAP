@@ -6,6 +6,8 @@ def umeyama(a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray, np.ndarray
     a, b = np.asarray(a, float), np.asarray(b, float)
     if a.shape != b.shape or a.ndim != 2 or a.shape[1] != 3:
         raise ValueError("a and b must both be (N, 3)")
+    if len(a) < 2:
+        raise ValueError("need at least two point pairs")
     aa, bb = a - a.mean(0), b - b.mean(0)
     u, sv, vt = np.linalg.svd(bb.T @ aa / len(a))
     d = np.ones(3)

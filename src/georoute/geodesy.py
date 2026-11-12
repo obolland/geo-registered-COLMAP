@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -30,9 +30,10 @@ def lla_to_ecef(lat_deg, lon_deg, h_m, ellipsoid: Ellipsoid = WGS84) -> np.ndarr
     )
 
 
-def ecef_to_lla(x, y, z, ellipsoid: Ellipsoid = WGS84) -> np.ndarray:
-    """Iterative inverse, well below a millimetre near the surface at any latitude including the poles."""
-    x, y, z = (np.asarray(v, float) for v in (x, y, z))
+def ecef_to_lla(ecef, ellipsoid: Ellipsoid = WGS84) -> np.ndarray:
+    """(..., 3) ECEF to (..., 3) lat, lon (degrees), height. Iterative, well below a millimetre near the
+    surface at any latitude including the poles; undefined at the Earth's centre."""
+    x, y, z = np.moveaxis(np.asarray(ecef, float), -1, 0)
     p = np.hypot(x, y)
     lat = np.arctan2(z, p * (1.0 - ellipsoid.e2))
     for _ in range(6):
@@ -66,25 +67,27 @@ def ned_to_ecef(lat_deg: float, lon_deg: float, ned) -> np.ndarray:
 
 @dataclass(frozen=True)
 class LocalFrame:
-    """A local east-north-up frame anchored at an origin on the ellipsoid, in a named datum."""
+    """A local east-north-up frame anchored at an origin on the WGS84/GRS80 ellipsoid. The datum is a
+    label: frames only combine with frames carrying the same label."""
 
     lat_deg: float
     lon_deg: float
     h_m: float
     datum: str
-    origin_ecef: np.ndarray
-    ecef_from_enu: np.ndarray
+    origin_ecef: np.ndarray = field(init=False, repr=False, compare=False)
+    ecef_from_enu: np.ndarray = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        origin = lla_to_ecef(self.lat_deg, self.lon_deg, self.h_m)
+        rotation = ecef_from_enu_rotation(self.lat_deg, self.lon_deg)
+        origin.flags.writeable = False
+        rotation.flags.writeable = False
+        object.__setattr__(self, "origin_ecef", origin)
+        object.__setattr__(self, "ecef_from_enu", rotation)
 
     @classmethod
     def at(cls, lat_deg: float, lon_deg: float, h_m: float, datum: str) -> "LocalFrame":
-        return cls(
-            lat_deg,
-            lon_deg,
-            h_m,
-            datum,
-            lla_to_ecef(lat_deg, lon_deg, h_m),
-            ecef_from_enu_rotation(lat_deg, lon_deg),
-        )
+        return cls(float(lat_deg), float(lon_deg), float(h_m), datum)
 
     def from_ecef(self, ecef) -> np.ndarray:
         return (np.asarray(ecef, float) - self.origin_ecef) @ self.ecef_from_enu
