@@ -34,18 +34,18 @@ Proposed: keep and test ENU maths, Umeyama (diagnostic, fix 6), resample/smooth/
 
 Earth curvature below an origin's tangent plane: 2 m at 5 km, 31 m at 20 km, 126 m at 40 km. A single-origin "up" axis biases grade by about d/R (0.6% at 40 km), which the trainer would apply. float32 resolution is 1 mm at 10 km, 4 mm at 40 km, 8 mm at 80 km. Direction: per-tile local frames anchored to one shared earth-fixed reference; grade and elevation from each point's own geodetic height.
 
-## Research in progress (branch `research/output-design`)
+## Research (branch `research/output-design`)
 
 - `runtime-rendering-and-headsets.md`
 - `tiling-lod-and-training.md`
 - `trainer-and-sensors.md`
 - `comfort-and-sickness.md`
 
-Each agent commits its own file as it goes. A file still marked "Status: in progress" was interrupted; resume that topic.
+All four files are complete and committed.
 
 ## Next steps
 
-1. When research is done: synthesise into a proposed output design.
+1. Done: proposed output design in `docs/OUTPUT-DESIGN.md` (v0.1, not yet challenged).
 2. **Don't run the thinking skill to challenge the output design until Olly gives the go-ahead.**
 3. Plan track 1 (slices 0-5: repo hygiene, characterisation tests, session ingest, photo matching, exposure time and Hermite positions, rig config and lever arm). These need only the field test 1 sample.
 4. Push nothing without Olly's explicit go-ahead.
