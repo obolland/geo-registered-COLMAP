@@ -54,7 +54,7 @@ All four files are complete and committed.
 
 - Claude red team done: `research/design-challenge-claude.md` (synthesis, section 5 lists proposed edits), raw panel in `research/redteam-claude/`.
 - Deepseek peer session ("splat pipeline deepseek") is red-teaming independently into `research/design-challenge-deepseek.md` (uncommitted until this session commits it).
-- Deepseek review committed. Merged: `research/design-challenge-merged.md` (section 5 = decisions awaiting Olly). Next: Olly answers, then edit `docs/OUTPUT-DESIGN.md` to v0.2.
+- Merged review applied: `docs/OUTPUT-DESIGN.md` is now v0.2 (2026-11-12). Next: plan track 1 (slices 0-5).
 
 ## Olly's answers to the merged review (2026-11-12)
 
