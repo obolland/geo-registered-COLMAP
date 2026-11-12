@@ -72,3 +72,8 @@ All four files are complete and committed.
 - Warm-up photos: dropped (they still take part in pulse matching, then are filtered out).
 - Photos without RTK fixed (my decision, Olly delegated): keep every capture photo for reconstruction; each image's position prior carries its own uncertainty from hAcc/vAcc (float = loose prior, no fix = no prior), so SfM bridges float stretches between fixed ones; QA gates on long non-fixed runs.
 - Real-time RTK never revises past epochs. PPK can: field test 1 `rtcm.bin` contains MSM4 for GPS/GLO/GAL/BDS (1074/1084/1094/1124) plus 1005/1033/1230, i.e. full base observations, and `receiver.ubx` has RAWX/SFRBX. A forward-plus-backward PPK pass (RTKLIB) is therefore feasible and becomes an optional ingest stage after slice 4. Caveat: `LOCAL` may be a virtual base whose 1005 position changes on reconnect; handle per connection.
+
+## Build progress (branch `pipeline/track1`)
+
+- Slice 0 done (review: `research/reviews/slice0-review.md`, fixes committed).
+- Slice 1 done (review: `research/reviews/slice1-review.md`, fixes committed). Next: slice 2, session ingest.
