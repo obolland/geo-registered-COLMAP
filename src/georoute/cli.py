@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     report = sub.add_parser("session-report", help="check a logger session's integrity")
     report.add_argument("session_dir", type=Path)
     report.add_argument("--json", type=Path, help="also write the report as JSON")
+    report.epilog = "exit status: 0 ok, 1 integrity errors, 2 session unreadable"
     return parser
 
 
@@ -32,7 +33,7 @@ def _session_report(args) -> int:
         report = session_report(load_session(args.session_dir))
     except SessionError as e:
         print(f"ERROR {e}", file=sys.stderr)
-        return 1
+        return 2
     print(format_report(report))
     if args.json:
         args.json.write_text(json.dumps(report, indent=2))

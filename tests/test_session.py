@@ -1,33 +1,11 @@
 import csv
 import json
-import os
-import shutil
-from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import FT1, edit_csv, needs_ft1, set_cells
 
 from georoute.session import SessionError, load_session
-
-# GPS times are float64 seconds since 1980: resolution about 0.24 us, i.e. micrometres at riding speed.
-FIXTURE = Path(__file__).parent / "fixtures" / "ft1_trim"
-FT1 = Path(
-    os.environ.get("GEOROUTE_FT1", Path(__file__).parents[2] / "gps-camera-trigger/samples/20261108T153731Z")
-)
-
-
-@pytest.fixture
-def session_dir(tmp_path):
-    d = tmp_path / "20261108T153731Z"
-    shutil.copytree(FIXTURE, d)
-    return d
-
-
-def _edit_csv(path, edit):
-    rows = list(csv.reader(path.read_text().splitlines()))
-    rows = edit(rows)
-    with open(path, "w", newline="") as f:
-        csv.writer(f, lineterminator="\n").writerows(rows)
 
 
 def _edit_meta(d, edit, name="session.json"):
@@ -48,6 +26,7 @@ def test_loads_the_trimmed_field_session(session_dir):
     assert s.datum == "ETRS89"
 
 
+# GPS times are float64 seconds since 1980: about 0.24 us resolution, micrometres at riding speed.
 def test_command_time_is_the_tm2_rising_edge_in_gps_seconds(session_dir):
     s = load_session(session_dir)
     assert s.command_time(0) == pytest.approx(2444 * 604800 + 56271.297 + 828193e-9, abs=1e-6)
@@ -88,13 +67,13 @@ def test_missing_metadata_refuses(session_dir):
 
 @pytest.mark.parametrize("name", ["pulses.csv", "tm2.csv", "pvt.csv"])
 def test_wrong_header_refuses(session_dir, name):
-    _edit_csv(session_dir / name, lambda rows: [rows[0][:-1] + ["surprise"]] + rows[1:])
+    edit_csv(session_dir / name, lambda rows: [rows[0][:-1] + ["surprise"]] + rows[1:])
     with pytest.raises(SessionError, match=name):
         load_session(session_dir)
 
 
 def test_duplicate_pulse_refuses(session_dir):
-    _edit_csv(session_dir / "pulses.csv", lambda rows: rows + [rows[-1]])
+    edit_csv(session_dir / "pulses.csv", lambda rows: rows + [rows[-1]])
     with pytest.raises(SessionError, match="pulse 19"):
         load_session(session_dir)
 
@@ -105,7 +84,7 @@ def test_invalid_tm2_refuses_when_its_time_is_used(session_dir, column, value):
         rows[4][column] = value
         return rows
 
-    _edit_csv(session_dir / "tm2.csv", edit)
+    edit_csv(session_dir / "tm2.csv", edit)
     s = load_session(session_dir)
     with pytest.raises(SessionError, match="pulse 3"):
         s.command_time(3)
@@ -113,7 +92,7 @@ def test_invalid_tm2_refuses_when_its_time_is_used(session_dir, column, value):
 
 
 def test_pulse_without_tm2_refuses_when_its_time_is_used(session_dir):
-    _edit_csv(session_dir / "tm2.csv", lambda rows: rows[:5] + rows[6:])
+    edit_csv(session_dir / "tm2.csv", lambda rows: rows[:5] + rows[6:])
     s = load_session(session_dir)
     with pytest.raises(SessionError, match="pulse 4"):
         s.command_time(4)
@@ -133,7 +112,7 @@ def test_week_rollover_keeps_gps_time_continuous(session_dir):
     ]:
         row = dict(template, iTOW=itow, utc=utc, nano=nano)
         rows.append([row[c] for c in header])
-    _edit_csv(session_dir / "pvt.csv", lambda _: rows)
+    edit_csv(session_dir / "pvt.csv", lambda _: rows)
     s = load_session(session_dir)
     np.testing.assert_allclose(np.diff(s.pvt.gps_time_s), 0.2, atol=1e-6)
     assert s.pvt.gps_time_s[2] == pytest.approx(2445 * 604800)
@@ -144,14 +123,89 @@ def test_pvt_disagreeing_with_itow_refuses(session_dir):
         rows[10][0] = str(int(rows[10][0]) + 1000)
         return rows
 
-    _edit_csv(session_dir / "pvt.csv", edit)
+    edit_csv(session_dir / "pvt.csv", edit)
     with pytest.raises(SessionError, match="iTOW"):
         load_session(session_dir)
 
 
-@pytest.mark.skipif(not FT1.exists(), reason="field test 1 sample not available")
+@needs_ft1
 def test_full_field_test_1_loads():
     s = load_session(FT1)
     assert len(s.pulses) == 434 and len(s.pvt.gps_time_s) == 1415
-    assert sum(t is not None for t in s.tm2.values()) == 434
+    assert len(s.tm2) == 434
     assert np.bincount(s.pvt.carr_soln).tolist() == [3, 252, 1160]
+
+
+@pytest.mark.parametrize("name", ["pulses.csv", "tm2.csv", "pvt.csv"])
+def test_a_truncated_last_row_is_dropped_with_a_warning(session_dir, name):
+    path = session_dir / name
+    path.write_text(path.read_text().rstrip("\n").rsplit(",", 3)[0] + "\n")
+    s = load_session(session_dir)
+    assert any(name in w and "truncated" in w for w in s.load_warnings)
+
+
+def test_a_short_row_before_the_end_refuses(session_dir):
+    edit_csv(session_dir / "pvt.csv", lambda rows: rows[:5] + [rows[5][:4]] + rows[6:])
+    with pytest.raises(SessionError, match="pvt.csv:6"):
+        load_session(session_dir)
+
+
+@pytest.mark.parametrize(
+    ("name", "column", "value", "where"),
+    [
+        ("pvt.csv", 2, "", "pvt.csv:4"),
+        ("pvt.csv", 11, "abc", "pvt.csv:4 velN"),
+        ("pulses.csv", 0, "1.5", "pulses.csv:4 pulse_n"),
+        ("tm2.csv", 3, "", "tm2.csv:4 towMsR"),
+    ],
+)
+def test_malformed_values_refuse_with_their_location(session_dir, name, column, value, where):
+    edit_csv(session_dir / name, set_cells(column, value, [3]))
+    with pytest.raises(SessionError, match=where):
+        load_session(session_dir)
+
+
+@pytest.mark.parametrize("name", ["pulses.csv", "pvt.csv"])
+def test_files_with_no_rows_refuse(session_dir, name):
+    edit_csv(session_dir / name, lambda rows: rows[:1])
+    with pytest.raises(SessionError, match=name):
+        load_session(session_dir)
+
+
+def test_missing_files_and_settings_refuse(session_dir):
+    meta = json.loads((session_dir / "session.json").read_text())
+    del meta["settings"]["nav_period_ms"]
+    (session_dir / "session.json").write_text(json.dumps(meta))
+    with pytest.raises(SessionError, match="nav_period_ms"):
+        load_session(session_dir)
+    (session_dir / "session.json").write_text('{"settings": ')
+    with pytest.raises(SessionError, match="session.json"):
+        load_session(session_dir)
+
+
+def test_missing_csv_refuses(session_dir):
+    (session_dir / "tm2.csv").unlink()
+    with pytest.raises(SessionError, match="tm2.csv"):
+        load_session(session_dir)
+
+
+def test_pvt_time_must_increase(session_dir):
+    edit_csv(session_dir / "pvt.csv", lambda rows: rows[:10] + [rows[11], rows[10]] + rows[12:])
+    with pytest.raises(SessionError, match="pvt.csv:12"):
+        load_session(session_dir)
+
+
+def test_negative_nano_is_the_fraction_before_the_utc_second(session_dir):
+    def edit(rows):
+        rows[1][1], rows[1][2] = "-599777078", "2026-11-08T15:37:32Z"
+        return rows
+
+    edit_csv(session_dir / "pvt.csv", edit)
+    s = load_session(session_dir)
+    assert s.pvt.gps_time_s[0] % 604800 == pytest.approx(56269.400222922, abs=1e-6)
+
+
+def test_tm2_week_rollover(session_dir):
+    edit_csv(session_dir / "tm2.csv", set_cells(2, "2445", [1]))
+    edit_csv(session_dir / "tm2.csv", set_cells(3, "0", [1]))
+    assert load_session(session_dir).tm2[0].rising_gps_s == pytest.approx(2445 * 604800 + 828193e-9, abs=1e-6)

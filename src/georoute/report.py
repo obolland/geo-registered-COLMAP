@@ -4,10 +4,11 @@ import numpy as np
 
 from georoute.session import CAMERA_COUNT, Session, SessionError
 
-LOGGER_COUNTERS = (
+# Lost pulse rows break photo-to-pulse matching; the others show up in the data the report checks.
+FATAL_COUNTERS = ("pulses_lost",)
+WARNING_COUNTERS = (
     "rx_ring_lost",
     "sync_late",
-    "pulses_lost",
     "tm2_unmatched",
     "checksum_errors",
     "decode_errors",
@@ -18,8 +19,12 @@ LOGGER_COUNTERS = (
 
 def session_report(s: Session) -> dict:
     errors: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = list(s.load_warnings)
     pvt = _pvt_summary(s)
+    pulse_numbers = [p.n for p in s.pulses]
+    if pulse_numbers != list(range(len(pulse_numbers))):
+        warnings.append("pulse numbers are not a contiguous 0..N-1 sequence")
+    errors += [f"TIM-TM2 row for pulse {n} has no pulse" for n in sorted(set(s.tm2) - set(pulse_numbers))]
 
     if not s.clean_stop:
         warnings.append(
@@ -45,10 +50,12 @@ def session_report(s: Session) -> dict:
         "pvt_rows": len(s.pvt.gps_time_s),
         "missed_epochs": pvt["missed_epochs"],
     }
-    for key, value in recomputed.items():
-        if key in counts and counts[key] != value:
-            warnings.append(f"session.json says {key} {counts[key]}, the data has {value}")
-    warnings += [f"logger counter {k} is {counts[k]}" for k in LOGGER_COUNTERS if counts.get(k)]
+    if s.clean_stop:
+        for key, value in recomputed.items():
+            if key in counts and counts[key] != value:
+                warnings.append(f"session.json says {key} {counts[key]}, the data has {value}")
+    errors += [f"logger counter {k} is {counts[k]}" for k in FATAL_COUNTERS if counts.get(k)]
+    warnings += [f"logger counter {k} is {counts[k]}" for k in WARNING_COUNTERS if counts.get(k)]
 
     return {
         "session": s.path.name,
@@ -100,7 +107,7 @@ def _pvt_summary(s: Session) -> dict:
         "median_h_acc_m": float(np.median(s.pvt.h_acc_m)),
         "longest_non_fixed_run": {
             "epochs": epochs,
-            "seconds": epochs * period,
+            "seconds": float(t[first + epochs - 1] - t[first] + period) if epochs else 0.0,
             "metres": float(speed[first : first + epochs].sum() * period),
             "starts_gps_s": float(t[first]) if epochs else None,
         },
