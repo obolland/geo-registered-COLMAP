@@ -79,3 +79,4 @@ All four files are complete and committed.
 - Slice 1 done (review: `research/reviews/slice1-review.md`, fixes committed).
 - Slice 2 done (review: `research/reviews/slice2-review.md`, fixes committed). Logger counter policy: `pulses_lost` is an error, the rest are warnings (their effects are checked in the data). 
 - Slice 3 done (review: `research/reviews/slice3-review.md`, fixes committed). Known residual risk: a missing first photo plus an extra last photo with no file-number gap and repeating intervals is undetectable (documented in photos.py). Next: slice 4.
+- Slice 4 done (review: `research/reviews/slice4-review.md`, fixes committed). Real-data note: on field test 1, Hermite and linear predict held-out epochs about equally (median 2-3 cm) because measurement noise and 0.4 s aliasing dominate at walking pace; Hermite matters at cycling speed. Next: slice 5, rig config and lever arm.
