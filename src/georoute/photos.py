@@ -1,5 +1,9 @@
 """Reads each camera's photos and matches them to logger pulses: for camera N, the k-th photo in shutter
-order is the k-th pulse with a camN sync edge. Anything that doesn't line up refuses."""
+order is the k-th pulse with a camN sync edge. Anything that doesn't line up refuses.
+
+Residual risk: a photo missing at the very start together with an extra one at the very end, with no gap
+in file numbers and pulse intervals that happen to repeat to within the tolerance, can't be told apart
+from a correct match."""
 
 import json
 import re
@@ -22,7 +26,8 @@ EXIF_TAGS = [
     "ExposureTime",
     "FocalLength",
 ]
-FILE_NUMBER = re.compile(r"(\d+)\D*$")
+NAME_NUMBER = re.compile(r"(\d+)$")
+FILE_NUMBERS_PER_FOLDER = 9999
 
 
 class MatchError(ValueError):
@@ -43,6 +48,13 @@ class Photo:
     def name(self) -> str:
         return self.path.rsplit("/", 1)[-1]
 
+    @property
+    def name_number(self) -> int:
+        found = NAME_NUMBER.search(Path(self.name).stem)
+        if not found:
+            raise MatchError(f"cam{self.camera}: {self.path} has no file number in its name")
+        return int(found.group(1))
+
 
 @dataclass(frozen=True)
 class Match:
@@ -59,14 +71,29 @@ def read_photos(images_root, folders: dict[int, str] | None = None) -> dict[int,
     out = {}
     for camera, folder in folders.items():
         if (root / folder).is_dir():
-            result = subprocess.run(
-                ["exiftool", "-json", "-n", "-ext", "jpg", *(f"-{t}" for t in EXIF_TAGS), str(root / folder)],
-                capture_output=True,
-                text=True,
-            )
-            records = json.loads(result.stdout) if result.stdout.strip() else []
-            out[camera] = photos_from_exiftool(records, camera, root)
+            out[camera] = _read_folder(root, root / folder, camera)
     return out
+
+
+def _read_folder(root: Path, folder: Path, camera: int) -> list[Photo]:
+    strays = [p.name for p in folder.iterdir() if not p.name.startswith(".") and p.suffix.lower() != ".jpg"]
+    if strays:
+        raise MatchError(f"cam{camera}: {folder} holds files that aren't .jpg photos: {sorted(strays)[:5]}")
+    result = subprocess.run(
+        ["exiftool", "-json", "-n", "-ext", "jpg", *(f"-{t}" for t in EXIF_TAGS), str(folder)],
+        capture_output=True,
+        text=True,
+    )
+    problems = [line for line in result.stderr.splitlines() if line.startswith(("Error", "Warning"))]
+    if result.returncode != 0 or problems:
+        raise MatchError(
+            f"cam{camera}: exiftool couldn't read every photo: {problems or result.stderr.strip()}"
+        )
+    try:
+        records = json.loads(result.stdout) if result.stdout.strip() else []
+    except json.JSONDecodeError as e:
+        raise MatchError(f"cam{camera}: exiftool output is not JSON: {e}") from e
+    return photos_from_exiftool(records, camera, root)
 
 
 def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[Photo]:
@@ -75,10 +102,16 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
         path = Path(r["SourceFile"]).relative_to(root).as_posix()
         for tag in ("DateTimeOriginal", "ExposureTime"):
             if tag not in r:
-                raise MatchError(f"{path} has no EXIF {tag}")
-        taken = datetime.strptime(r["DateTimeOriginal"], "%Y:%m:%d %H:%M:%S").replace(tzinfo=UTC).timestamp()
+                raise MatchError(f"cam{camera}: {path} has no EXIF {tag}")
         subsec = str(r.get("SubSecTimeOriginal", ""))
-        taken += float(f"0.{subsec}") if subsec else 0.0
+        try:
+            taken = (
+                datetime.strptime(r["DateTimeOriginal"], "%Y:%m:%d %H:%M:%S").replace(tzinfo=UTC).timestamp()
+            )
+            taken += float(f"0.{subsec}") if subsec else 0.0
+            exposure = float(r["ExposureTime"])
+        except ValueError as e:
+            raise MatchError(f"cam{camera}: {path} has unreadable EXIF time or exposure: {e}") from None
         serial = r.get("SerialNumber")
         photos.append(
             Photo(
@@ -86,7 +119,7 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
                 camera,
                 r.get("FileNumber"),
                 taken,
-                float(r["ExposureTime"]),
+                exposure,
                 r.get("FocalLength"),
                 None if serial is None else str(serial),
             )
@@ -96,58 +129,101 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
 
 def order_photos(photos: list[Photo]) -> list[Photo]:
     """Shutter order: Canon FileNumber when every photo has one, else the filename number with the
-    9999 to 0001 rollover unwrapped. The camera clock must agree."""
-    if photos and all(p.file_number is not None for p in photos):
-        ordered = sorted(photos, key=lambda p: p.file_number)
-    else:
-        by_time = sorted(photos, key=lambda p: p.taken_s)
-        unwrapped, offset, previous = {}, 0, None
-        for p in by_time:
-            number = int(FILE_NUMBER.search(Path(p.name).stem).group(1))
-            if previous is not None and number < previous - 5000:
-                offset += 10000
-            unwrapped[p.path], previous = number + offset, number
-        ordered = sorted(photos, key=lambda p: unwrapped[p.path])
+    9999 to 0001 rollover unwrapped. The camera clock must agree, and the sequence can't have gaps."""
+    if not photos:
+        return []
+    with_number = [p.file_number is not None for p in photos]
+    if any(with_number) and not all(with_number):
+        raise MatchError(f"cam{photos[0].camera}: only some photos have a Canon FileNumber")
+    unwrapped = _unwrapped_name_numbers(photos)
+    key = (lambda p: p.file_number) if all(with_number) else (lambda p: unwrapped[p.path])
+    ordered = sorted(photos, key=key)
     for before, after in zip(ordered, ordered[1:], strict=False):
         if after.taken_s < before.taken_s:
-            raise MatchError(f"{after.path} is earlier on the camera clock than {before.path}")
+            raise MatchError(
+                f"cam{after.camera}: {after.path} is earlier on the camera clock than {before.path}"
+            )
+        if unwrapped[after.path] != unwrapped[before.path] + 1:
+            raise MatchError(f"cam{after.camera}: file numbers jump from {before.name} to {after.name}")
     return ordered
+
+
+def _unwrapped_name_numbers(photos: list[Photo]) -> dict[str, int]:
+    unwrapped, offset, previous = {}, 0, None
+    for p in sorted(photos, key=lambda p: p.taken_s):
+        number = p.name_number
+        if previous is not None and number < previous - FILE_NUMBERS_PER_FOLDER // 2:
+            offset += FILE_NUMBERS_PER_FOLDER
+        unwrapped[p.path], previous = number + offset, number
+    return unwrapped
+
+
+def _same_serial(a: str, b: str) -> bool:
+    return a.lstrip("0") == b.lstrip("0")
 
 
 def match_photos(
     session: Session, photos: dict[int, list[Photo]], serials: dict[int, str] | None = None
 ) -> list[Match]:
-    matches = []
+    matches, bodies = [], {}
     for camera in range(CAMERA_COUNT):
         pulses = [p for p in session.pulses if p.delays_us[camera] is not None]
         if camera not in photos:
             if pulses:
                 raise MatchError(f"cam{camera}: no photo folder, but {len(pulses)} pulses have its sync edge")
             continue
-        ordered = order_photos(photos[camera])
-        expected = (serials or {}).get(camera)
-        for p in ordered:
-            if expected is not None and p.serial != expected:
-                raise MatchError(f"{p.path} is from camera serial {p.serial}, cam{camera} expects {expected}")
-        _check_alignment(session, camera, ordered, pulses)
+        summary = f"cam{camera}: {len(photos[camera])} photos for {len(pulses)} pulses"
+        try:
+            ordered = order_photos(photos[camera])
+        except MatchError as e:
+            raise MatchError(f"{summary}; {str(e).removeprefix(f'cam{camera}: ')}") from None
+        _check_alignment(session, camera, ordered, pulses, summary)
+        _check_body(camera, ordered, (serials or {}).get(camera), bodies)
         matches += [Match(photo, pulse) for photo, pulse in zip(ordered, pulses, strict=True)]
     return sorted(matches, key=lambda m: (m.pulse.n, m.photo.camera))
 
 
-def _check_alignment(session: Session, camera: int, photos: list[Photo], pulses: list[Pulse]):
-    summary = f"cam{camera}: {len(photos)} photos for {len(pulses)} pulses"
-    for k in range(1, min(len(photos), len(pulses))):
+def _check_body(camera: int, photos: list[Photo], expected: str | None, bodies: dict[str, int]):
+    found = {p.serial for p in photos if p.serial is not None}
+    if len({s.lstrip("0") for s in found}) > 1:
+        raise MatchError(f"cam{camera} holds photos from more than one camera body: {sorted(found)}")
+    for serial in found:
+        if expected is not None and not _same_serial(serial, expected):
+            raise MatchError(
+                f"cam{camera}: photos are from camera serial {serial}, cam{camera} expects {expected}"
+            )
+        other = bodies.setdefault(serial.lstrip("0"), camera)
+        if other != camera:
+            raise MatchError(f"cam{camera} and cam{other} both hold photos from camera serial {serial}")
+
+
+def _check_alignment(session: Session, camera: int, photos: list[Photo], pulses: list[Pulse], summary: str):
+    """Photo intervals on the camera clock must follow exposure intervals from the logger. Pulses whose
+    time mark isn't valid are bridged, comparing across them to the last valid one."""
+    last, compared = None, 0
+    for k in range(min(len(photos), len(pulses))):
         try:
-            pulse_dt = _exposure(session, pulses[k], camera) - _exposure(session, pulses[k - 1], camera)
+            t = _exposure(session, pulses[k], camera)
         except SessionError:
             continue
-        if abs((photos[k].taken_s - photos[k - 1].taken_s) - pulse_dt) > INTERVAL_TOLERANCE_S:
-            raise MatchError(
-                f"{summary}; photos stop following the pulses at {photos[k].path} "
-                f"(pulse {pulses[k].n}): a photo is missing or extra just before it"
-            )
+        if last is not None:
+            j, t_j = last
+            if abs((photos[k].taken_s - photos[j].taken_s) - (t - t_j)) > INTERVAL_TOLERANCE_S:
+                raise MatchError(
+                    f"{summary}; photos stop following the pulses at {photos[k].path} "
+                    f"(pulse {pulses[k].n}): a photo is missing or extra just before it"
+                )
+            compared += 1
+        last = (k, t)
+    if len(photos) > 1 and compared == 0:
+        raise MatchError(f"{summary}; no two pulses have valid time marks, so the match can't be verified")
     if len(photos) != len(pulses):
-        raise MatchError(f"{summary}; the sequences agree up to the end, so the difference is at the end")
+        raise MatchError(
+            f"{summary}; intervals agree throughout, so a photo is missing or extra at the start "
+            f"({photos[0].path}) or the end ({photos[-1].path})"
+            if photos
+            else summary
+        )
 
 
 def _exposure(session: Session, pulse: Pulse, camera: int) -> float:

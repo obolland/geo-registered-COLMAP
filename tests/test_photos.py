@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from conftest import FT1, needs_ft1
+from conftest import FIXTURE as FIXTURE_DIR
+from conftest import FT1, edit_csv, needs_ft1, set_cells
+from PIL import Image
 
 from georoute.photos import MatchError, Photo, match_photos, order_photos, photos_from_exiftool, read_photos
 from georoute.session import load_session
@@ -19,7 +21,9 @@ def _photos_for(session, camera, offset=CAMERA_CLOCK_OFFSET_S, first_number=407)
     for k, p in enumerate(q for q in session.pulses if q.delays_us[camera] is not None):
         t = session.command_time(p.n) + p.delays_us[camera] * 1e-6 + offset
         number = (first_number + k - 1) % 9999 + 1
-        out.append(Photo(f"cam{camera}/IMG_{number:04d}.JPG", camera, None, round(t, 2), 0.001, 18.0, "0123"))
+        out.append(
+            Photo(f"cam{camera}/IMG_{number:04d}.JPG", camera, None, round(t, 2), 0.001, 18.0, f"012{camera}")
+        )
     return out
 
 
@@ -44,7 +48,7 @@ def test_a_missing_photo_refuses_and_says_where(session):
 
 def test_an_extra_photo_refuses(session):
     photos = _photos_for(session, 0)
-    photos.insert(5, Photo("cam0/IMG_9000.JPG", 0, None, photos[4].taken_s + 0.2, 0.001, 18.0, "0123"))
+    photos.append(Photo("cam0/IMG_0426.JPG", 0, None, photos[-1].taken_s + 0.2, 0.001, 18.0, "0123"))
     with pytest.raises(MatchError, match="20 photos for 19 pulses"):
         match_photos(session, {0: photos})
 
@@ -52,8 +56,8 @@ def test_an_extra_photo_refuses(session):
 def test_a_missing_and_an_extra_photo_cannot_cancel_out(session):
     photos = _photos_for(session, 0)
     del photos[3]
-    photos.append(Photo("cam0/IMG_0500.JPG", 0, None, photos[-1].taken_s + 0.6, 0.001, 18.0, "0123"))
-    with pytest.raises(MatchError, match="IMG_0411.JPG"):
+    photos.append(Photo("cam0/IMG_0426.JPG", 0, None, photos[-1].taken_s + 0.6, 0.001, 18.0, "0123"))
+    with pytest.raises(MatchError, match="IMG_0409.JPG to IMG_0411.JPG"):
         match_photos(session, {0: photos})
 
 
@@ -69,7 +73,7 @@ def test_a_camera_that_should_have_photos_but_has_no_folder_refuses(session):
 
 def test_a_photo_from_the_wrong_body_refuses(session):
     photos = _photos_for(session, 0)
-    with pytest.raises(MatchError, match="serial 0123.*expects 9999"):
+    with pytest.raises(MatchError, match="serial 0120.*expects 9999"):
         match_photos(session, {0: photos}, serials={0: "9999"})
 
 
@@ -145,8 +149,6 @@ def test_missing_exposure_time_refuses():
 @needs_exiftool
 @needs_ft1
 def test_field_test_1_stub_photos_all_match(tmp_path):
-    from PIL import Image
-
     cam = tmp_path / "images" / "cam0"
     cam.mkdir(parents=True)
     Image.new("RGB", (8, 8)).save(tmp_path / "base.jpg")
@@ -180,8 +182,6 @@ def test_field_test_1_stub_photos_all_match(tmp_path):
 
 @needs_exiftool
 def test_match_command_reports_and_fails_loudly(session_dir, tmp_path, capsys):
-    from PIL import Image
-
     from georoute.cli import main
 
     session = load_session(session_dir)
@@ -199,10 +199,103 @@ def test_match_command_reports_and_fails_loudly(session_dir, tmp_path, capsys):
             str(tmp_path / "images" / p.path),
             "-execute",
         ]
-    subprocess.run(["exiftool", "-q", "-overwrite_original", *args], check=True)
+    subprocess.run(["exiftool", *args, "-common_args", "-q", "-overwrite_original"], check=True)
 
     assert main(["match", str(session_dir), str(tmp_path / "images")]) == 0
     assert "cam0 19 photos matched (1 warm-up, 18 capture)" in capsys.readouterr().out
     (cam / "IMG_0410.JPG").unlink()
     assert main(["match", str(session_dir), str(tmp_path / "images")]) == 1
     assert "IMG_0411.JPG" in capsys.readouterr().err
+
+
+def _steady(session, interval=0.6):
+    """The session with every command 'interval' apart, so intervals alone can't reveal a shift."""
+    t0 = session.command_time(0)
+    tm2 = {n: type(t)(n, t0 + n * interval, 1, True, 10) for n, t in session.tm2.items()}
+    pulses = [
+        type(p)(p.n, p.kind, p.cmd_ticks_us, (95000 if p.n else None, None, None, None))
+        for p in session.pulses
+    ]
+    return type(session)(session.path, session.meta, session.meta_file, pulses, tm2, session.pvt, [])
+
+
+def test_a_gap_in_file_numbers_refuses_even_when_intervals_are_steady(session):
+    steady = _steady(session)
+    photos = _photos_for(steady, 0)
+    del photos[9]
+    with pytest.raises(MatchError, match="cam0.*file numbers jump from IMG_0415.JPG to IMG_0417.JPG"):
+        match_photos(steady, {0: photos})
+
+
+def test_count_difference_at_the_ends_names_both_ends(session):
+    steady = _steady(session)
+    photos = _photos_for(steady, 0)[:-1]
+    with pytest.raises(MatchError, match="IMG_0407.JPG.*IMG_0424.JPG"):
+        match_photos(steady, {0: photos})
+
+
+def test_invalid_time_marks_are_bridged_not_skipped(session_dir):
+    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [8, 9]))
+    session = load_session(session_dir)
+    photos = _photos_for(load_session(FIXTURE_DIR), 0)
+    del photos[8]
+    with pytest.raises(MatchError, match="IMG_0416.JPG"):
+        match_photos(session, {0: photos})
+
+
+def test_no_valid_time_marks_cannot_be_verified(session_dir):
+    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", range(1, 21)))
+    with pytest.raises(MatchError, match="cam0.*can't be verified"):
+        match_photos(load_session(session_dir), {0: _photos_for(load_session(FIXTURE_DIR), 0)})
+
+
+def test_mixed_file_numbers_refuse(session):
+    photos = _photos_for(session, 0)
+    photos[3] = Photo(photos[3].path, 0, 1000410, photos[3].taken_s, 0.001, 18.0, "0123")
+    with pytest.raises(MatchError, match="cam0.*only some photos"):
+        match_photos(session, {0: photos})
+
+
+def test_a_name_without_a_number_refuses(session):
+    photos = _photos_for(session, 0)
+    photos[3] = Photo("cam0/holiday.JPG", 0, None, photos[3].taken_s, 0.001, 18.0, "0123")
+    with pytest.raises(MatchError, match="holiday.JPG"):
+        match_photos(session, {0: photos})
+
+
+def test_mixed_or_shared_bodies_refuse(session):
+    photos = _photos_for(session, 0)
+    photos[2] = Photo(photos[2].path, 0, None, photos[2].taken_s, 0.001, 18.0, "777")
+    with pytest.raises(MatchError, match="cam0 holds photos from more than one camera body"):
+        match_photos(session, {0: photos})
+
+
+def test_serials_compare_without_leading_zeros(session):
+    assert match_photos(session, {0: _photos_for(session, 0)}, serials={0: "000120"})
+
+
+def test_equal_camera_timestamps_are_allowed():
+    photos = [Photo(f"cam0/IMG_{n:04d}.JPG", 0, None, 5.0, 0.001, 18, None) for n in (1, 2)]
+    assert len(order_photos(photos)) == 2
+
+
+@pytest.mark.parametrize(("tag", "value"), [("DateTimeOriginal", "yesterday"), ("SubSecTimeOriginal", "x9")])
+def test_malformed_exif_refuses_with_the_photo(tag, value):
+    record = {"SourceFile": "/x/cam0/IMG_1.JPG", "DateTimeOriginal": "2026:11:08 14:43:08"}
+    record["ExposureTime"] = 0.001
+    record[tag] = value
+    with pytest.raises(MatchError, match="cam0/IMG_1.JPG"):
+        photos_from_exiftool([record], camera=0, root=Path("/x"))
+
+
+@needs_exiftool
+def test_unreadable_files_and_strays_refuse(tmp_path):
+    cam = tmp_path / "cam0"
+    cam.mkdir()
+    (cam / "IMG_0001.JPG").write_bytes(b"not a jpeg")
+    with pytest.raises(MatchError, match="cam0.*IMG_0001.JPG"):
+        read_photos(tmp_path)
+    (cam / "IMG_0001.JPG").unlink()
+    Image.new("RGB", (8, 8)).save(cam / "IMG_0002.jpeg")
+    with pytest.raises(MatchError, match="cam0.*IMG_0002.jpeg"):
+        read_photos(tmp_path)
