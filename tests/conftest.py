@@ -53,7 +53,7 @@ def write_stub_photos(images_root, photos):
         stamp = datetime.fromtimestamp(taken_s, UTC)
         args += [
             f"-DateTimeOriginal={stamp:%Y:%m:%d %H:%M:%S}",
-            f"-SubSecTimeOriginal={stamp.microsecond // 10000:02d}",
+            f"-SubSecTimeOriginal={round(stamp.microsecond / 10000) % 100:02d}",
             f"-ExposureTime={exposure_s}",
             str(target),
             "-execute",

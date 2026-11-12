@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from georoute import __version__
 from georoute.geodesy import LocalFrame, lla_to_ecef
 from georoute.photos import match_photos, read_photos
 from georoute.report import session_report
@@ -30,55 +31,32 @@ def session_frame(session: Session) -> LocalFrame:
 
 
 def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> dict:
+    """Writes report.json always (with the refusal reason if refused), and images.json and track.png only
+    when every capture photo was timed and positioned."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    session = load_session(session_dir)
-    report = {"session": session_report(session)}
-    _write_json(out / "report.json", report)
-    if report["session"]["errors"]:
-        raise IngestError("session integrity errors: " + "; ".join(report["session"]["errors"]))
-
-    matches = match_photos(session, read_photos(images_root))
-    captures = [m for m in matches if m.pulse.kind == "capture"]
-    t_mid = np.array(
-        [
-            exposure_mid(
-                session.command_time(m.pulse.n),
-                m.pulse.delays_us[m.photo.camera],
-                m.photo.exposure_s,
-                curtain_travel_s,
-            )
-            for m in captures
-        ]
-    )
-    antenna = antenna_positions(session.pvt, t_mid, session.nav_period_s)
-    frame = session_frame(session)
-    enu = frame.from_ecef(antenna.ecef)
-
-    images = [
-        {
-            "path": m.photo.path,
-            "camera": m.photo.camera,
-            "pulse": m.pulse.n,
-            "t_mid_gps_s": float(t_mid[k]),
-            "exposure_s": m.photo.exposure_s,
-            "antenna_ecef": antenna.ecef[k].tolist(),
-            "antenna_enu": enu[k].tolist(),
-            "carr_soln": int(antenna.carr_soln[k]),
-            "fix_type": int(antenna.fix_type[k]),
-            "h_acc_m": float(antenna.h_acc_m[k]),
-            "v_acc_m": float(antenna.v_acc_m[k]),
-            "bracket_gap_s": float(antenna.bracket_gap_s[k]),
-            "flags": antenna.flags[k],
-        }
-        for k, m in enumerate(captures)
-    ]
+    for stale in ("images.json", "track.png"):
+        (out / stale).unlink(missing_ok=True)
+    report: dict = {}
+    try:
+        session = load_session(session_dir)
+        report["session"] = session_report(session)
+        if report["session"]["errors"]:
+            raise IngestError("session integrity errors: " + "; ".join(report["session"]["errors"]))
+        images, frame, summary = _position_captures(session, images_root, curtain_travel_s)
+    except Exception as e:
+        report["refused"] = str(e)
+        _write_json(out / "report.json", report)
+        raise
+    report["ingest"] = summary
     _write_json(
         out / "images.json",
         {
             "schema": IMAGES_SCHEMA,
+            "georoute": __version__,
             "session": session.path.name,
             "datum": session.datum,
+            "nav_period_s": session.nav_period_s,
             "curtain_travel_s": curtain_travel_s,
             "frame": {
                 "lat_deg": frame.lat_deg,
@@ -90,6 +68,50 @@ def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> 
             "images": images,
         },
     )
+    _write_json(out / "report.json", report)
+    _plot(
+        out / "track.png",
+        frame.from_ecef(_track_ecef(session)),
+        np.array([i["antenna_enu"] for i in images]),
+        np.array([i["carr_soln"] for i in images]),
+    )
+    return summary
+
+
+def _position_captures(session: Session, images_root, curtain_travel_s: float):
+    matches = match_photos(session, read_photos(images_root))
+    captures = [m for m in matches if m.pulse.kind == "capture"]
+    delays = [m.pulse.delays_us[m.photo.camera] for m in captures]
+    t_mid = np.array(
+        [
+            exposure_mid(session.command_time(m.pulse.n), d, m.photo.exposure_s, curtain_travel_s)
+            for m, d in zip(captures, delays, strict=True)
+        ]
+    )
+    antenna = antenna_positions(session.pvt, t_mid, session.nav_period_s)
+    frame = session_frame(session)
+    enu = frame.from_ecef(antenna.ecef)
+    epoch = np.searchsorted(session.pvt.gps_time_s, t_mid, side="right") - 1
+    images = [
+        {
+            "path": m.photo.path,
+            "camera": m.photo.camera,
+            "pulse": m.pulse.n,
+            "delay_us": delays[k],
+            "exposure_s": m.photo.exposure_s,
+            "t_mid_gps_s": float(t_mid[k]),
+            "antenna_ecef": antenna.ecef[k].tolist(),
+            "antenna_enu": enu[k].tolist(),
+            "carr_soln": int(antenna.carr_soln[k]),
+            "fix_type": int(antenna.fix_type[k]),
+            "h_acc_m": round(float(antenna.h_acc_m[k]), 4),
+            "v_acc_m": round(float(antenna.v_acc_m[k]), 4),
+            "bracket_gap_s": round(float(antenna.bracket_gap_s[k]), 6),
+            "corr_age": session.pvt.corr_age[epoch[k]],
+            "flags": antenna.flags[k],
+        }
+        for k, m in enumerate(captures)
+    ]
     summary = {
         "images": len(images),
         "warmups_dropped": len(matches) - len(captures),
@@ -98,10 +120,7 @@ def ingest(session_dir, images_root, out_dir, curtain_travel_s: float = 0.0) -> 
         },
         "flagged": {f: sum(f in i["flags"] for i in images) for f in ("not-fixed", "no-3d-fix", "gap")},
     }
-    report["ingest"] = summary
-    _write_json(out / "report.json", report)
-    _plot(out / "track.png", frame.from_ecef(_track_ecef(session)), enu, antenna.carr_soln)
-    return summary
+    return images, frame, summary
 
 
 def _track_ecef(session: Session) -> np.ndarray:

@@ -60,9 +60,15 @@ def ecef_from_enu_rotation(lat_deg: float, lon_deg: float) -> np.ndarray:
     return np.array([[-so, -sl * co, cl * co], [co, -sl * so, cl * so], [0.0, cl, sl]])
 
 
-def ned_to_ecef(lat_deg: float, lon_deg: float, ned) -> np.ndarray:
+def ned_to_ecef(lat_deg, lon_deg, ned) -> np.ndarray:
+    """Rotates (..., 3) NED vectors to ECEF; lat/lon may be scalars or one per vector."""
+    lat, lon = np.radians(lat_deg), np.radians(lon_deg)
     n, e, d = np.moveaxis(np.asarray(ned, float), -1, 0)
-    return np.stack([e, n, -d], axis=-1) @ ecef_from_enu_rotation(lat_deg, lon_deg).T
+    sl, cl, so, co = np.sin(lat), np.cos(lat), np.sin(lon), np.cos(lon)
+    up = -d
+    return np.stack(
+        [-so * e - sl * co * n + cl * co * up, co * e - sl * so * n + cl * so * up, cl * n + sl * up], axis=-1
+    )
 
 
 @dataclass(frozen=True)

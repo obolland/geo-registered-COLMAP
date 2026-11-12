@@ -32,6 +32,8 @@ def exposure_mid(t_command: float, delay_us: int, exposure_s: float, curtain_tra
 
 
 def antenna_positions(track: PvtTrack, times, nav_period_s: float = 0.2) -> AntennaPositions:
+    """Quality takes the worse of the two bracketing epochs, so a photo exactly on an epoch also carries the
+    next epoch's quality (conservative)."""
     t = np.asarray(times, float)
     epochs = track.gps_time_s
     outside = (t < epochs[0]) | (t > epochs[-1])

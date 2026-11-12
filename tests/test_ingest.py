@@ -9,7 +9,7 @@ import pytest
 from conftest import FT1, needs_ft1, write_stub_photos
 
 from georoute.cli import main
-from georoute.ingest import IngestError, ingest
+from georoute.ingest import IngestError, ingest, session_frame
 from georoute.session import load_session
 
 needs_exiftool = pytest.mark.skipif(shutil.which("exiftool") is None, reason="exiftool not installed")
@@ -83,3 +83,41 @@ def test_field_test_1_positions_follow_the_walk(tmp_path):
     spacing = np.linalg.norm(np.diff(enu[:, :2], axis=0), axis=1)
     assert np.median(spacing) == pytest.approx(0.81, abs=0.02)
     assert sum("not-fixed" in i["flags"] for i in images) > 0
+
+
+@needs_exiftool
+def test_a_refused_rerun_leaves_no_stale_outputs(session_dir, tmp_path):
+    _stubs_for(load_session(session_dir), tmp_path / "images")
+    ingest(session_dir, tmp_path / "images", tmp_path / "out")
+    (tmp_path / "images" / "cam0" / "IMG_0412.JPG").unlink()
+    with pytest.raises(Exception, match="IMG_0413"):
+        ingest(session_dir, tmp_path / "images", tmp_path / "out")
+    assert not (tmp_path / "out" / "images.json").exists() and not (tmp_path / "out" / "track.png").exists()
+    assert "IMG_0413" in json.loads((tmp_path / "out" / "report.json").read_text())["refused"]
+
+
+def test_a_session_without_any_fixed_epoch_has_no_frame(session_dir):
+    from conftest import edit_csv, set_cells
+
+    edit_csv(session_dir / "pvt.csv", set_cells(4, "1", range(1, 75)))
+    with pytest.raises(IngestError, match="RTK-fixed"):
+        session_frame(load_session(session_dir))
+
+
+@needs_exiftool
+def test_curtain_travel_option_shifts_mid_exposure(session_dir, tmp_path):
+    _stubs_for(load_session(session_dir), tmp_path / "images")
+    main(["ingest", str(session_dir), str(tmp_path / "images"), "--out", str(tmp_path / "a")])
+    main(
+        [
+            "ingest",
+            str(session_dir),
+            str(tmp_path / "images"),
+            "--out",
+            str(tmp_path / "b"),
+            "--curtain-travel-ms",
+            "4",
+        ]
+    )
+    a, b = (json.loads((tmp_path / x / "images.json").read_text())["images"][0] for x in "ab")
+    assert a["t_mid_gps_s"] - b["t_mid_gps_s"] == pytest.approx(0.002, abs=1e-6)
