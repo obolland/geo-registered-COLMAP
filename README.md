@@ -9,7 +9,7 @@ Work in progress. The design is in `docs/OUTPUT-DESIGN.md`, the current build pl
 System dependencies (macOS, Homebrew):
 
 ```bash
-brew install uv exiftool colmap   # COLMAP 4.2.1 or later
+brew install uv exiftool colmap   # COLMAP must be 4.2.1 (colmap -h shows the version)
 ```
 
 Then, from the repo root:

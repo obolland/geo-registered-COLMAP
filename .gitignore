@@ -6,12 +6,31 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+.env
 
 # datasets and pipeline outputs never go in git
-datasets/
-outputs/
+/datasets/
+/outputs/
 *.ubx
 *.bin
-*.JPG
 *.jpg
-!tests/fixtures/**
+*.JPG
+*.jpeg
+*.JPEG
+*.png
+*.CR2
+*.CR3
+*.HEIC
+*.mp4
+*.mov
+*.db
+*.ply
+*.splat
+*.spz
+*.sog
+
+# small test fixtures are the exception
+!tests/fixtures/**/*.ubx
+!tests/fixtures/**/*.bin
+!tests/fixtures/**/*.jpg
+!tests/fixtures/**/*.JPG
