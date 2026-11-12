@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Turns GNSS-timed multi-camera captures into geo-registered, streamable Gaussian-splat routes"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "matplotlib>=3.11.2",
     "numpy>=2.1",
     "pycolmap==4.2.1",
 ]
