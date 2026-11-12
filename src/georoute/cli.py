@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from georoute import __version__
+from georoute.photos import MatchError, match_photos, read_photos
 from georoute.report import format_report, session_report
 from georoute.session import SessionError, load_session
 
@@ -16,6 +17,10 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("session_dir", type=Path)
     report.add_argument("--json", type=Path, help="also write the report as JSON")
     report.epilog = "exit status: 0 ok, 1 integrity errors, 2 session unreadable"
+    match = sub.add_parser("match", help="match each camera's photos to the session's pulses")
+    match.add_argument("session_dir", type=Path)
+    match.add_argument("images_root", type=Path, help="folder holding cam0 .. cam3")
+    match.epilog = "exit status: 0 all matched, 1 mismatch, 2 session unreadable"
     return parser
 
 
@@ -24,6 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "session-report":
         return _session_report(args)
+    if args.command == "match":
+        return _match(args)
     parser.print_help()
     return 0
 
@@ -38,3 +45,21 @@ def _session_report(args) -> int:
     if args.json:
         args.json.write_text(json.dumps(report, indent=2))
     return 1 if report["errors"] else 0
+
+
+def _match(args) -> int:
+    try:
+        session = load_session(args.session_dir)
+    except SessionError as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 2
+    try:
+        matches = match_photos(session, read_photos(args.images_root))
+    except MatchError as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    for camera in sorted({m.photo.camera for m in matches}):
+        mine = [m for m in matches if m.photo.camera == camera]
+        warmups = sum(m.pulse.kind == "warmup" for m in mine)
+        print(f"cam{camera} {len(mine)} photos matched ({warmups} warm-up, {len(mine) - warmups} capture)")
+    return 0
