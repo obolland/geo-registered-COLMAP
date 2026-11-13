@@ -84,6 +84,21 @@ def test_pulse_numbers_with_a_hole_warn(session_dir):
     assert any("pulse numbers" in w for w in r["warnings"])
 
 
+def test_pulse_numbers_out_of_order_are_an_error(session_dir):
+    edit_csv(session_dir / "pulses.csv", lambda rows: [rows[0], rows[2], rows[1]] + rows[3:])
+    r = session_report(load_session(session_dir))
+    assert any("out of order" in e for e in r["errors"])
+
+
+def test_run_distance_spans_a_missed_epoch(session_dir):
+    edit_csv(session_dir / "pvt.csv", set_cells(4, "1", range(11, 17)))
+    full = session_report(load_session(session_dir))["pvt"]["longest_non_fixed_run"]
+    edit_csv(session_dir / "pvt.csv", lambda rows: rows[:13] + rows[14:])
+    gapped = session_report(load_session(session_dir))["pvt"]["longest_non_fixed_run"]
+    assert gapped["epochs"] == 5 and gapped["seconds"] == pytest.approx(full["seconds"])
+    assert gapped["metres"] == pytest.approx(full["metres"], rel=0.1)
+
+
 def test_lost_pulse_rows_are_an_error(session_dir):
     meta = json.loads((session_dir / "session.json").read_text())
     meta["counts"]["pulses_lost"] = 2

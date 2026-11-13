@@ -208,4 +208,70 @@ def test_negative_nano_is_the_fraction_before_the_utc_second(session_dir):
 def test_tm2_week_rollover(session_dir):
     edit_csv(session_dir / "tm2.csv", set_cells(2, "2445", [1]))
     edit_csv(session_dir / "tm2.csv", set_cells(3, "0", [1]))
+    edit_csv(session_dir / "tm2.csv", set_cells(5, "2445", [1]))
+    edit_csv(session_dir / "tm2.csv", set_cells(6, "50", [1]))
     assert load_session(session_dir).tm2[0].rising_gps_s == pytest.approx(2445 * 604800 + 828193e-9, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "where"),
+    [
+        (7, "nan", "lat"),
+        (7, "100.0", "lat"),
+        (8, "-181", "lon"),
+        (9, "inf", "height_m"),
+        (9, "20000", "height_m"),
+        (4, "5", "carrSoln"),
+        (3, "9", "fixType"),
+        (11, "nan", "velN"),
+        (11, "200000", "velN"),
+        (14, "-1", "hAcc_mm"),
+        (1, "1500000000", "nano"),
+        (0, "604800000", "iTOW"),
+    ],
+)
+def test_out_of_range_pvt_values_refuse(session_dir, column, value, where):
+    edit_csv(session_dir / "pvt.csv", set_cells(column, value, [5]))
+    with pytest.raises(SessionError, match=f"pvt.csv:6 {where}"):
+        load_session(session_dir)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "where"),
+    [(4, "1500000000", "towSubMsR"), (3, "-1", "towMsR"), (2, "100", "wnR"), (10, "-3", "accEst_ns")],
+)
+def test_out_of_range_tm2_values_refuse(session_dir, column, value, where):
+    edit_csv(session_dir / "tm2.csv", set_cells(column, value, [5]))
+    with pytest.raises(SessionError, match=f"tm2.csv:6 {where}"):
+        load_session(session_dir)
+
+
+def test_a_falling_edge_before_the_rising_edge_refuses(session_dir):
+    edit_csv(session_dir / "tm2.csv", set_cells(6, "56271000", [1]))
+    with pytest.raises(SessionError, match="tm2.csv:2 falling edge"):
+        load_session(session_dir)
+
+
+@pytest.mark.parametrize("value", ["-5000", "10000", "600000"])
+def test_implausible_shutter_delays_refuse(session_dir, value):
+    edit_csv(session_dir / "pulses.csv", set_cells(3, value, [3]))
+    with pytest.raises(SessionError, match="pulses.csv:4 cam0_delay_us"):
+        load_session(session_dir)
+
+
+def test_a_single_pvt_epoch_refuses(session_dir):
+    edit_csv(session_dir / "pvt.csv", lambda rows: rows[:2])
+    with pytest.raises(SessionError, match="at least two"):
+        load_session(session_dir)
+
+
+def test_settings_must_be_a_table_with_a_positive_nav_period(session_dir):
+    meta = json.loads((session_dir / "session.json").read_text())
+    meta["settings"]["nav_period_ms"] = 0
+    (session_dir / "session.json").write_text(json.dumps(meta))
+    with pytest.raises(SessionError, match="nav_period_ms"):
+        load_session(session_dir)
+    meta["settings"] = []
+    (session_dir / "session.json").write_text(json.dumps(meta))
+    with pytest.raises(SessionError, match="settings"):
+        load_session(session_dir)

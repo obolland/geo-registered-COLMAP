@@ -22,7 +22,9 @@ def session_report(s: Session) -> dict:
     warnings: list[str] = list(s.load_warnings)
     pvt = _pvt_summary(s)
     pulse_numbers = [p.n for p in s.pulses]
-    if pulse_numbers != list(range(len(pulse_numbers))):
+    if pulse_numbers != sorted(pulse_numbers):
+        errors.append("pulse numbers are out of order in pulses.csv")
+    elif pulse_numbers != list(range(len(pulse_numbers))):
         warnings.append("pulse numbers are not a contiguous 0..N-1 sequence")
     errors += [f"TIM-TM2 row for pulse {n} has no pulse" for n in sorted(set(s.tm2) - set(pulse_numbers))]
 
@@ -108,7 +110,7 @@ def _pvt_summary(s: Session) -> dict:
         "longest_non_fixed_run": {
             "epochs": epochs,
             "seconds": float(t[first + epochs - 1] - t[first] + period) if epochs else 0.0,
-            "metres": float(speed[first : first + epochs].sum() * period),
+            "metres": float(np.sum((speed * np.append(steps, period))[first : first + epochs])),
             "starts_gps_s": float(t[first]) if epochs else None,
         },
     }
