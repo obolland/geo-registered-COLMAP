@@ -88,4 +88,8 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 
 - Inputs are complete for PPK: `receiver.ubx` has 1415 RAWX epochs (about 51 measurements each, one gap over 0.25 s), and `rtcm.bin` carries MSM4 for GPS/GLO/GAL/BDS from a single fixed base (one 1005 position, about 12.5 km from the walk).
 - The six float stretches (3.4-20.6 s) are not caused by correction latency or satellite loss: corrAge and numSV (median 30) are the same as in fixed epochs. That is the pattern a combined forward-backward PPK pass usually bridges, because the backward pass enters each stretch with ambiguities already fixed. Likely beneficial, not yet measured.
-- The actual PPK run is pending: building RTKLIB (rtklibexplorer demo5) was blocked by the auto-mode permission check, so it needs Olly to allow it or build it himself.
+- PPK run (RTKLIB rtklibexplorer demo5 755e637, its `f9p_ppk.conf`: kinematic, combined forward-backward, L1+L2, GPS+GLO+GAL+BDS, fix-and-hold, base position from RTCM 1005):
+  - At 5 Hz it reports 92% fixed against 82% live, but the extra fixes are largely false. Where both are fixed they agree to a few cm until the last 33 s, then differ by about 0.30 m north and 0.31 m up. An ambiguity-free check (integrated Doppler velocity) sides with the live fix: +3.78 m vertical change by Doppler, +3.88 m live, +4.50 m PPK over epochs 1100-1300. PPK also has 53 epoch-to-epoch vertical jumps over 15 cm, against 2 live.
+  - At the base's 1 Hz epochs (GLO/GAL/BDS MSM arrive at 1 Hz, GPS at 2 Hz) PPK fixes only 4-6%.
+  - Verdict: on this data PPK is not beneficial; the live F9P RTK is the more reliable solution. Don't build a PPK stage now. Keep logging RAWX and RTCM as insurance and revisit only if field test 2 has long float stretches (an own 1-5 Hz base would be the stronger option then).
+  - Method lesson: judge PPK by consistency checks (Doppler, epoch jumps, agreement where both are fixed), never by fix rate alone.
