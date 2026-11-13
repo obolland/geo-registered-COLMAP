@@ -54,7 +54,7 @@ Severity scale used here: **blocker** = fix before any real 4-camera or COLMAP w
 match_photos(session, {0: photos})
 ```
 
-It returns 19 matches, pairing `cam0/IMG_0407.JPG` with pulse 1 and every later photo one pulse late. A camera with one photo and one pulse is also matched with no interval verification: `match_photos(s1, {0: [photo]})` returns one match and pairs the photo with that pulse. A simpler reproduction: set `counts.pulses_lost = 2` in `session.json`; `session-report` exits 1, `ingest` exits 1, and `match` exits 0 with a clean match. The documented residual risk also reproduces directly: a 20-photo steady 0.6 s session, delete the first photo and append an extra last 0.6 s later; `match_photos` accepts 19 photos and pairs `IMG_0408` with pulse 1 although it is truly pulse 2. The interval fingerprint cannot see a uniform one-pulse shift when every pulse interval is the same. The `ingest` path is protected because `session_report` flags invalid TM2 or lost pulses and refuses; the `match` command is not. The `match` CLI is the planned user-facing check ("reports 432/432" in the plan), so a weak session can report a full match that is silently wrong.
+It returns 19 matches, pairing `cam0/IMG_0407.JPG` with pulse 1 and every later photo one pulse late. A camera with one photo and one pulse is also matched with no interval verification: `match_photos(s1, {0: [photo]})` returns one match and pairs the photo with that pulse, even when the photo's EXIF taken time is 3600 s away from it. A simpler reproduction: set `counts.pulses_lost = 2` in `session.json`; `session-report` exits 1, `ingest` exits 1, and `match` exits 0 with a clean match. The documented residual risk also reproduces directly: a 20-photo steady 0.6 s session, delete the first photo and append an extra last 0.6 s later; `match_photos` accepts 19 photos and pairs `IMG_0408` with pulse 1 although it is truly pulse 2. The interval fingerprint cannot see a uniform one-pulse shift when every pulse interval is the same. The `ingest` path is protected because `session_report` flags invalid TM2 or lost pulses and refuses; the `match` command is not. The `match` CLI is the planned user-facing check ("reports 432/432" in the plan), so a weak session can report a full match that is silently wrong.
 
 **Why it matters.** The documented residual risk is not the only silent-mismatch path. A session with several invalid TM2 rows (correction outage, logger stall, checksum loss) can leave only one comparable interval; a uniform one-pulse shift then passes. A camera that died after one exposure is plausible in field test 2, and its single photo cannot be verified. A rational operator or QA user will trust the `match` output.
 
@@ -154,9 +154,9 @@ It returns 19 matches, pairing `cam0/IMG_0407.JPG` with pulse 1 and every later 
 
 **Where.** `src/georoute/cli.py:61-70` (`_session_report` catches only `SessionError`; `--json` write is uncovered); `73-88` (`_match` catches `MatchError`/`RigError` but not `OSError` from `read_photos`/exiftool); `91-108` (`_ingest` catches the named errors but not `OSError` from `out.mkdir`, `_write_json` or matplotlib, nor `ValueError`/`OverflowError` from malformed metadata).
 
-**Reproduction.** `session.json` containing `[]` gives `AttributeError: 'list' object has no attribute 'get'` from `_read_meta`. `nav_period_ms = 0` gives the OverflowError above. `--out` under a regular file, a read-only output directory, or `--json` with a missing parent gives an `OSError` traceback.
+**Reproduction.** `session.json` containing `[]` gives `AttributeError: 'list' object has no attribute 'get'` from `_read_meta`. `nav_period_ms = 0` gives the OverflowError above. `--out` under a regular file, a read-only output directory, or `--json` with a missing parent gives an `OSError` traceback; `ingest` calls `out.mkdir` before its `try`, so the failure has no `report.json`. `camera = 1` in `rig.toml` gives `TypeError: 'int' object is not iterable` from `load_rig`.
 
-**Fix.** Validate metadata (S1); catch `OSError` and the remaining metadata exceptions in the CLI and return the documented exit code with a one-line message; wrap the JSON write. Add tests for the list metadata, zero period, missing `--json` parent and unwritable `--out`.
+**Fix.** Validate metadata (S1); require `camera` to be a list of dict entries in `load_rig`; move `out.mkdir`/stale-file deletion inside the `try`; catch `OSError` and the remaining metadata exceptions in the CLI and return the documented exit code with a one-line message; wrap the JSON write. Add tests for the list metadata, zero period, missing `--json` parent, unwritable `--out` and `camera = 1`.
 
 ### S8. The "no fix = no prior" decision is not encoded, and `images.json` carries no usable per-image uncertainty
 
@@ -184,11 +184,11 @@ It returns 19 matches, pairing `cam0/IMG_0407.JPG` with pulse 1 and every later 
 
 ### S11. The PPK evidence is not reproducible from the repo, and the raw-log insurance is unenforced
 
-**Where.** `research/STATUS.md:87-95` records the verdict, but the RTKLIB demo5 build, `ppk.conf`/`combined.conf`, base/rover observations and `.pos` outputs are only in the scratchpad. `git ls-files research | grep -i ppk` returns nothing.
+**Where.** `research/STATUS.md:87-95` records the verdict, but the RTKLIB demo5 build, `ppk.conf`/`combined.conf`, base/rover observations and `.pos` outputs are only in the scratchpad. `base.nav` is already missing from the scratchpad even though `combined.pos` lists it; no exact `convbin`/`rnx2rtkp` command (including `-ti 1`) or Doppler/jump analysis script is in the repo or STATUS. `git ls-files research | grep -i ppk` returns nothing.
 
-**Reproduction.** A future engineer cannot rerun the exact consistency checks, base position, config or comparison from the repository. I independently verified the numbers from the scratchpad (1302/1415 fixed, last-33-s +0.305 m north/+0.330 m up, 53 versus 2 jumps over 15 cm, +3.75 Doppler/+3.88 live/+4.50 combined over epochs 1100-1300), but the evidence is not in the record. Separately, the insurance is unenforced: nothing in `session_report` checks that `receiver.ubx` and `rtcm.bin` exist, or that their sizes match `counts.ubx_bytes` and `counts.rtcm_bytes`, so a later session can pass ingest with the raw logs absent. The record has no cycling-speed revisit trigger: FT1's 3.4-20.6 s float runs become 27-165 m at 8 m/s, above the design's 50 m gate. A future PPK solution's base 1005 coordinates must also be tied to ETRS89 before mixing with live epochs.
+**Reproduction.** A future engineer cannot rerun the exact consistency checks, base position, config or comparison from the repository. I independently verified the numbers from the scratchpad (1302/1415 fixed, last-33-s +0.305 m north/+0.330 m up, 53 versus 2 jumps over 15 cm, +3.75 Doppler/+3.88 live/+4.50 combined over epochs 1100-1300), but the evidence is not in the record. The STATUS wording also needs correction: the 1 Hz subset comes from decimating the rover to 1 Hz, not from the base epochs; the base MSM is 2 Hz for GPS/BDS and 1 Hz for GLO/GAL; the subset is 3.5-6.0%, not 4-6%; "a few cm" is the median, with p95 |dU| 26.7 cm and max 74.1 cm; a 90-120 s cluster of the extra fixes agrees with Doppler within 0.1 m over 30 s; the Doppler is vertical-only and the final-33-s horizontal is unadjudicated. Separately, the insurance is unenforced: nothing in `session_report` checks that `receiver.ubx` and `rtcm.bin` exist, or that their sizes match `counts.ubx_bytes` and `counts.rtcm_bytes`, so a later session can pass ingest with the raw logs absent. The record has no cycling-speed revisit trigger: FT1's 3.4-20.6 s float runs become 27-165 m at 8 m/s, above the design's 50 m gate. A future PPK solution's base 1005 coordinates must also be tied to ETRS89 before mixing with live epochs.
 
-**Fix.** Add raw-log presence and size checks to the session report and provenance, a distance-based revisit trigger, and a datum check for any future PPK output. Commit a `research/ppk-ft1/` bundle with the RTKLIB config, exact `convbin`/`rnx2rtkp` commands, base coordinates and the Doppler/jump analysis code, or a short `research/ppk-check.md` that carries them. No rerun is needed now. The method and conclusion are sound; the record and the insurance checks are the gap.
+**Fix.** Add raw-log presence and size checks to the session report and provenance, a distance-based revisit trigger, and a datum check for any future PPK output. Commit a `research/ppk-ft1/` bundle with the RTKLIB config, exact `convbin`/`rnx2rtkp` commands (including `-ti 1`), base coordinates, `.pos` summaries and the Doppler/jump analysis code, or a short `research/ppk-check.md` that carries them; correct the STATUS wording and cite the caveats above. No rerun is needed now. The method and conclusion are sound; the record and the insurance checks are the gap.
 
 ### S12. An unmeasured rig is only a warning, and ingest still writes priors from placeholder geometry
 
@@ -260,6 +260,16 @@ It returns 19 matches, pairing `cam0/IMG_0407.JPG` with pulse 1 and every later 
 
 **Fix.** Require a non-empty, unique serial for every camera when `measured = true`; record the observed serial per camera in `images.json`; add a `georoute-session.json` sidecar or an expected file-number range per camera folder, and check the session start/time or file-number range. Apply the check in both `match` and `ingest`. This overlaps S3; the session-binding part is distinct.
 
+### S19. TM2 fields are not range-checked, and the falling-edge cross-check is absent
+
+**Where.** `src/georoute/session.py:224` (`rising = wnR * WEEK_S + towMsR / 1e3 + towSubMsR / 1e9`, no range check); `src/georoute/session.py:214` (delay); `src/georoute/report.py:43-44` (the only timing check is that a photographed pulse is inside the track). The `wnF`/`towMsF` falling-edge fields are not parsed or cross-checked.
+
+**Reproduction.** Set a photographed pulse's `towSubMsR = 1.5e9`: the rising time shifts by +1.499 s, `session-report` returns no errors, and `antenna_positions` returns a position with `flags = []`. Set `cam0_delay_us = -1000`: `t_mid` moves 0.5 ms earlier with no error. Neither is covered by the B1/S2 ranges.
+
+**Why it matters.** A corrupted TM2 field or delay shifts every exposure time and prior while the time is still inside the track, so the session report's only timing check passes. The handoff defines the falling edge as optional, but when present it gives a cheap consistency check on the rising edge and the edge delta.
+
+**Fix.** Range-check `wnR`, `towMsR` (0 to 604,799,999), `towSubMsR` (0 to 1e9) and the per-camera delay (0-500 ms, or the measured 30-500 ms); when the falling fields are present, require rising <= falling and a plausible edge delta; check the TM2 time is inside the track; add tests. This is distinct from the `accEst_ns` nit (N2).
+
 ## 4. Nits
 
 1. **`umeyama` accepts two points.** `src/georoute/alignment.py:9-10`; two points are collinear, so the rotation about the line is underdetermined. `umeyama([[0,0,0],[1,0,0]], 2*...)` returns scale 2 and the identity rotation with no error. Require three non-collinear points or return a conditioning diagnostic; add a test.
@@ -294,7 +304,7 @@ The method is sound for this data. I parsed `combined.pos`, `forward.pos` and th
 - Epoch-to-epoch vertical jumps over 15 cm: combined 53, forward 38, live 2.
 - Over epochs 1100-1300 (40 s), the vertical change is +3.753 m by integrated Doppler, +3.877 m live, +4.496 m combined.
 
-That is strong evidence that the extra PPK fixes are largely false and that the combined solution diverges at the end. The conclusion "live RTK is more reliable on this data; do not build PPK now; keep RAWX/RTCM as insurance" is justified. Caveats: the integrated Doppler is from the same receiver and has its own bias; the base is 12.5 km away and the GLO/GAL/BDS MSM arrives at 1 Hz, so the 5 Hz PPK is partly interpolated. The 92% at 5 Hz is not directly comparable to the live 82% at 5 Hz: the base MSM rate is below the rover rate, and at the base's 1-2 Hz epochs PPK fixes only 4-6%; the 12.5 km baseline also has no surveyed truth point. The Doppler check is vertical-only, the 1100-1300 window includes 68 float epochs, and the final 33 s live-vs-Doppler horizontal divergence is +0.247 m north and -0.282 m east, comparable to the PPK-vs-live 0.30 m north, so the horizontal discrepancy is not adjudicated. The 53 vertical jumps and the conservative decision stand. The Doppler check is strong evidence that the PPK end segment is wrong, not that PPK is less reliable in general. The config uses fix-and-hold with a ratio threshold of 3, which is permissive, and one 356 m walk is not a general PPK verdict. The STATUS already says to revisit with a 1-5 Hz own base if field test 2 has long float stretches. What could overturn the conclusion: a closer, multi-frequency, 5 Hz base, a stricter ambiguity validation, a 5-minute static occupation of a known point at 1 Hz with the same receiver and base, a nearby OS Net base, a 60 s correction outage at field test 2, or a session with long float stretches where live RTK has no fixes. The decision not to build PPK now is proportionate. The record and the raw-log insurance checks should be committed (S11); a cycling-speed revisit trigger is needed because FT1's float runs become 27-165 m at 8 m/s, above the design's 50 m gate.
+That is strong evidence that the PPK solution diverges at the end and that many of its extra fixes are false. The conclusion "live RTK is more reliable on this data; do not build PPK now; keep RAWX/RTCM as insurance" is justified. Caveats: the integrated Doppler is from the same receiver and has its own bias; the base is 12.5 km away and its MSM arrives at 2 Hz (GPS, BDS) and 1 Hz (GLO, GAL), so the 5 Hz PPK is partly interpolated. The 1 Hz subset result (3.5-6.0%) comes from decimating the rover to 1 Hz, not from the base epochs; the 5 Hz run fixes 92.0% against live 82.0%. Where both are fixed the median difference is 1-3 mm, but the vertical tail is decimetres: my parse gives a signed p95 of 36.0 cm and a max of 43.6 cm on 1112 both-fixed epochs, while the panel's independent match gives p95 |dU| 26.7 cm and max 74.1 cm; the matched subset differs, and both agree the tail is not centimetres. A 90-120 s cluster of the 53 extra fixes agrees with the Doppler integral within 0.1 m over 30 s, so "the extra fixes are largely false" is supported by the jumps and the late-window divergence, not by every extra fix. The 12.5 km baseline has no surveyed truth point. The Doppler check is vertical-only, the 1100-1300 window includes 68 float epochs, and the final 33 s live-vs-Doppler horizontal divergence is +0.247 m north and -0.282 m east, comparable to the PPK-vs-live 0.30 m north, so the horizontal discrepancy is not adjudicated. The 53 vertical jumps and the conservative decision stand. The Doppler check is strong evidence that the PPK end segment is wrong, not that PPK is less reliable in general. The config uses fix-and-hold with a ratio threshold of 3, which is permissive, and one 356 m walk is not a general PPK verdict. The STATUS already says to revisit with a 1-5 Hz own base if field test 2 has long float stretches. What could overturn the conclusion: a closer, multi-frequency, 5 Hz base, a stricter ambiguity validation, a 5-minute static occupation of a known point at 1 Hz with the same receiver and base, a nearby OS Net base, a 60 s correction outage at field test 2, or a session with long float stretches where live RTK has no fixes. The decision not to build PPK now is proportionate. The record and the raw-log insurance checks should be committed (S11); a cycling-speed revisit trigger is needed because FT1's float runs become 27-165 m at 8 m/s, above the design's 50 m gate.
 
 ## 6. Gaps that will hurt slices 6-8
 
@@ -311,35 +321,36 @@ That is strong evidence that the extra PPK fixes are largely false and that the 
 
 ## 7. Panel convergence
 
-Seven of the eight panel reports are in; EN-1's report is still running at the time of writing. The table lists the agents that independently raised each point in the seven reports. The agent reports are the source of the detail; this table is the convergence summary.
+All eight panel reports are in. The table lists the agents that independently raised each point; the agent reports are the source of the detail and this table is the convergence summary.
 
 | Finding | Agents | Count |
 |---|---|---|
-| B1: non-finite/out-of-range values accepted | EN-2, PT-2, IN-1, IN-2, AR-1, AR-2 | 6 of 7 |
-| B2: `match` weak verification / silent wrong match | EN-2, PT-2, IN-1, IN-2, AR-1 | 5 of 7 |
-| B3: COLMAP rig/frame handoff | AR-2, IN-1, AR-1 | 3 of 7 |
-| B4: `images.json` identity/provenance | AR-2, IN-2, PT-1, AR-1 | 4 of 7 |
-| B5: base/PVT step check | PT-1, PT-2 | 2 of 7 |
-| B6: missing rig camera | PT-1, EN-2 | 2 of 7 |
-| S1: metadata type/period validation | EN-2, AR-1, PT-2, IN-1 | 4 of 7 |
-| S2: delay/exposure/curtain ranges | EN-2, IN-1, AR-1, PT-1 | 4 of 7 |
-| S3: serial/body binding | EN-2, PT-1, PT-2, AR-2, AR-1 | 5 of 7 |
-| S4: FileNumber/name gap mismatch | EN-2 | 1 of 7 |
-| S5: non-fixed-run metres undercount | EN-2, IN-1, AR-1 | 3 of 7 |
-| S6: out-of-order pulse warning | EN-2, PT-2 | 2 of 7 |
-| S7: CLI OSError/metadata tracebacks | EN-2, AR-1, PT-2 | 3 of 7 |
-| S8: prior semantics and uncertainty | AR-2, PT-1, IN-2, PT-2, IN-1, AR-1, EN-2 | 7 of 7 |
-| S9: datum label/realisation | AR-2, PT-1, IN-1, PT-2, EN-2 | 5 of 7 |
-| S10: straight-ride threshold | PT-1, IN-1, AR-2, PT-2, AR-1 | 5 of 7 |
-| S11: PPK record and raw-log insurance | PT-1, PT-2, IN-2, IN-1, AR-1, EN-2 | 6 of 7 |
-| S12: unmeasured rig | AR-2, PT-2, PT-1 | 3 of 7 |
-| S13: camera loss/zero capture | PT-2, IN-2, EN-2 | 3 of 7 |
-| S14: all-float session refusal | PT-2, EN-2 | 2 of 7 |
-| S15: session ENU frame range | IN-2, PT-2, AR-1 | 3 of 7 |
-| S16: multi-folder Canon layout | IN-2 | 1 of 7 |
-| S17: exiftool warnings / `._` files | EN-2, AR-1 | 2 of 7 |
-| S18: session binding | PT-1, PT-2 | 2 of 7 |
-| Nits: umeyama, accEst, schema fields, stale output, module boundaries, plan drift | EN-2, AR-1, IN-1, AR-2, PT-2, PT-1 | 6 of 7 |
+| B1: non-finite/out-of-range values accepted | EN-1, EN-2, PT-2, IN-1, IN-2, AR-1, AR-2 | 7 of 8 |
+| B2: `match` weak verification / silent wrong match | EN-1, EN-2, PT-2, IN-1, IN-2, AR-1 | 6 of 8 |
+| B3: COLMAP rig/frame handoff | AR-2, IN-1, AR-1 | 3 of 8 |
+| B4: `images.json` identity/provenance | AR-2, IN-2, PT-1, AR-1 | 4 of 8 |
+| B5: base/PVT step check | PT-1, PT-2 | 2 of 8 |
+| B6: missing rig camera | PT-1, EN-2 | 2 of 8 |
+| S1: metadata type/period validation | EN-1, EN-2, AR-1, PT-2, IN-1 | 5 of 8 |
+| S2: delay/exposure/curtain ranges | EN-1, EN-2, IN-1, AR-1, PT-1 | 5 of 8 |
+| S3: serial/body binding | EN-2, PT-1, PT-2, AR-2, AR-1 | 5 of 8 |
+| S4: FileNumber/name gap mismatch | EN-2 | 1 of 8 |
+| S5: non-fixed-run metres undercount | EN-1, EN-2, IN-1, AR-1 | 4 of 8 |
+| S6: out-of-order pulse warning | EN-2, PT-2 | 2 of 8 |
+| S7: CLI OSError/metadata tracebacks | EN-1, EN-2, AR-1, PT-2 | 4 of 8 |
+| S8: prior semantics and uncertainty | AR-2, PT-1, IN-2, PT-2, IN-1, AR-1, EN-2 | 7 of 8 |
+| S9: datum label/realisation | AR-2, PT-1, IN-1, PT-2, EN-2 | 5 of 8 |
+| S10: straight-ride threshold | PT-1, IN-1, AR-2, PT-2, AR-1 | 5 of 8 |
+| S11: PPK record and raw-log insurance | EN-1, PT-1, PT-2, IN-2, IN-1, AR-1, EN-2 | 7 of 8 |
+| S12: unmeasured rig | AR-2, PT-2, PT-1 | 3 of 8 |
+| S13: camera loss/zero capture | PT-2, IN-2, EN-2 | 3 of 8 |
+| S14: all-float session refusal | PT-2, EN-2 | 2 of 8 |
+| S15: session ENU frame range | IN-2, PT-2, AR-1 | 3 of 8 |
+| S16: multi-folder Canon layout | IN-2 | 1 of 8 |
+| S17: exiftool warnings / `._` files | EN-2, AR-1 | 2 of 8 |
+| S18: session binding | PT-1, PT-2 | 2 of 8 |
+| S19: TM2 field ranges | EN-1 | 1 of 8 |
+| Nits: umeyama, accEst, schema fields, stale output, module boundaries, plan drift | EN-1, EN-2, AR-1, IN-1, AR-2, PT-2, PT-1 | 7 of 8 |
 
 ## 8. What I could not verify
 

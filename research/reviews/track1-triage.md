@@ -7,6 +7,7 @@ Date 2026-11-13. Each finding in `track1-deepseek-review.md` was checked against
 | Item | Verified how | Fix |
 |---|---|---|
 | B1 non-finite and out-of-range PVT values pass | `lat=nan` loads (NaN position), `lat=100` loads, `carrSoln=5` gets no flag and the fix counts read 0/0/0, a one-epoch track gives NaN positions | Range-check every PVT field (lat, lon, height, carrSoln 0-2, fixType 0-5, finite velocities, non-negative accuracies, nano range); refuse fewer than two epochs |
+| S19 TIM-TM2 fields unchecked (from the addendum) | Code read: `_read_tm2` takes `towSubMsR` and the falling edge without range or order checks, so `towSubMsR=1.5e9` moves a command by 1.5 s silently | Range-check week, ms and sub-ms fields; require the falling edge (when present) after the rising edge by about the 50 ms pulse width |
 | S2 delays, exposure, curtain travel unchecked | Code read: no ranges on `camN_delay_us`, `ExposureTime`, `--curtain-travel-ms` | Delay 30-500 ms (the logger rejects under 30 ms), exposure above 0 and up to 30 s, curtain 0-50 ms finite, everywhere they enter |
 | B2 `match` skips the session integrity check | `pulses_lost=2` is a report error, but `_match` never runs the report | `match` refuses a session with integrity errors, like `ingest`; a tolerance-boundary test so loosening it fails |
 | B5 a position step passes as fixed | Code read: no kinematic consistency check; `rtcm.bin` never read | Flag epochs whose displacement disagrees with integrated Doppler (threshold calibrated on field test 1); record the RTCM 1005 base position(s) and refuse a base that moves mid-session; warn on NTRIP reconnects |
@@ -15,7 +16,7 @@ Date 2026-11-13. Each finding in `track1-deepseek-review.md` was checked against
 | S4 gap check uses filename numbers even when ordering by FileNumber | Code read (`order_photos`) | Check gaps in the sequence actually used |
 | S5 run metres use the nominal period | Code read | Integrate over real epoch intervals |
 | S6 permuted pulse numbers only warn | Code read | Error |
-| S7 OSError tracebacks in the CLI | Code read | Catch and exit cleanly |
+| S7 tracebacks in the CLI | Code read: OSError paths, `camera = 1` in a rig file gives TypeError, and `ingest` creates `--out` before its refusal handling | Catch and exit cleanly; validate the rig's camera table type; create the output folder inside the refusal path |
 | S8 no-prior decision not encoded | Field test output has a `carr_soln 0` image with a full position | Per image `has_prior` (false without RTK) and `prior_sigma_h_m` / `prior_sigma_v_m` |
 | S14 an all-float session is refused | `session_frame` needs a fixed epoch | Anchor at the first 3D-fix epoch, warn when none is fixed |
 | S17 macOS `._` files and exiftool warnings refuse a folder | Reproduced: a `._IMG_0001.JPG` companion makes `read_photos` raise | Ignore hidden files (`exiftool -i HIDDEN`); exiftool errors fatal, warnings recorded |
@@ -29,6 +30,10 @@ Date 2026-11-13. Each finding in `track1-deepseek-review.md` was checked against
 - S10 straight-ride threshold is a heuristic: keep, revisit with real COLMAP in slice 6.
 - S11 PPK not reproducible from the repo: the verdict is recorded with method and numbers; add a script only if PPK is revisited.
 - S16 Canon multi-folder cards (over 9999 photos per camera): not needed for field test 2 (about 1250 per camera); required before 20 km routes.
+
+## Noted
+
+- A camera with a single photo can't be checked against pulse intervals at all, and the camera clock offset is unknown by design, so its match is unverified: warn.
 
 ## Not adopted
 
