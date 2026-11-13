@@ -188,7 +188,8 @@ def test_a_rig_camera_with_no_exposures_refuses(session_dir, tmp_path):
             session_dir,
             tmp_path / "images",
             tmp_path / "out",
-            rig=load_rig(_rig_file(tmp_path, cameras=(0, 1))),
+            rig=load_rig(_rig_file(tmp_path, measured=False, cameras=(0, 1))),
+            allow_unmeasured_rig=True,
         )
 
 
@@ -273,8 +274,51 @@ def test_a_missing_rig_file_is_a_clean_error(session_dir, tmp_path, capsys):
 
 @needs_exiftool
 def test_an_explicit_zero_curtain_travel_overrides_the_rig(session_dir, tmp_path):
-    rig_path = _rig_file(tmp_path, measured=True, cameras=(0,))
+    rig_path = _rig_file(tmp_path, measured=False, cameras=(0,))
     rig_path.write_text(rig_path.read_text().replace("curtain_travel_ms = 0.0", "curtain_travel_ms = 4.0"))
     _stubs_for(load_session(session_dir), tmp_path / "images")
-    ingest(session_dir, tmp_path / "images", tmp_path / "out", curtain_travel_s=0.0, rig=load_rig(rig_path))
+    ingest(
+        session_dir,
+        tmp_path / "images",
+        tmp_path / "out",
+        curtain_travel_s=0.0,
+        rig=load_rig(rig_path),
+        allow_unmeasured_rig=True,
+    )
     assert json.loads((tmp_path / "out" / "images.json").read_text())["curtain_travel_s"] == 0
+
+
+@needs_exiftool
+def test_zero_capture_photos_refuses(session_dir, tmp_path):
+    from conftest import edit_csv
+
+    def all_warmup(rows):
+        for r in rows[1:]:
+            r[1] = "warmup"
+        return rows
+
+    edit_csv(session_dir / "pulses.csv", all_warmup)
+    _stubs_for(load_session(session_dir), tmp_path / "images")
+    with pytest.raises(IngestError, match="no capture photos"):
+        ingest(session_dir, tmp_path / "images", tmp_path / "out")
+
+
+@needs_exiftool
+def test_a_jump_removes_the_prior(session_dir, tmp_path):
+    from conftest import edit_csv
+
+    session = load_session(session_dir)
+    first = session.pulses[2]
+    epoch = int(np.searchsorted(session.pvt.gps_time_s, session.command_time(2) + first.delays_us[0] * 1e-6))
+
+    def shift(rows):
+        for r in rows[epoch + 1 :]:
+            r[8] = f"{float(r[8]) + 1.5 / (111320 * 0.6269):.7f}"
+        return rows
+
+    edit_csv(session_dir / "pvt.csv", shift)
+    _stubs_for(load_session(session_dir), tmp_path / "images")
+    ingest(session_dir, tmp_path / "images", tmp_path / "out")
+    images = json.loads((tmp_path / "out" / "images.json").read_text())["images"]
+    jumped = [i for i in images if "jump" in i["flags"]]
+    assert jumped and not any(i["has_prior"] for i in jumped)

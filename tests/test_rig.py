@@ -128,6 +128,13 @@ def _aligner_for(rig, frames):
     return truth, align
 
 
+def test_a_measured_rig_needs_a_serial_per_camera(tmp_path):
+    path = tmp_path / "rig.toml"
+    path.write_text(EXAMPLE.read_text().replace("measured = false", "measured = true"))
+    with pytest.raises(RigError, match="serial"):
+        load_rig(path)
+
+
 def test_missing_or_unreadable_files_are_rig_errors(tmp_path):
     with pytest.raises(RigError, match="rig.toml"):
         load_rig(tmp_path / "rig.toml")

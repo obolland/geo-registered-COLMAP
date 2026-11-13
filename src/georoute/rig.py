@@ -118,6 +118,9 @@ def load_rig(path) -> Rig:
     measured = doc.get("measured", False)
     if not isinstance(measured, bool):
         raise RigError(f"measured must be true or false, got {measured!r}")
+    unserialled = [c.index for c in cameras if not c.serial]
+    if measured and unserialled:
+        raise RigError(f"a measured rig needs a serial for every camera; camera {unserialled[0]} has none")
     return Rig(
         name=str(doc.get("name", path.stem)),
         measured=measured,

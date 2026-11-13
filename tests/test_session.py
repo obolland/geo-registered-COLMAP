@@ -275,3 +275,29 @@ def test_settings_must_be_a_table_with_a_positive_nav_period(session_dir):
     (session_dir / "session.json").write_text(json.dumps(meta))
     with pytest.raises(SessionError, match="settings"):
         load_session(session_dir)
+
+
+def test_an_invalid_time_mark_row_is_kept_without_range_checks(session_dir):
+    edit_csv(session_dir / "tm2.csv", set_cells(2, "0", [1]))
+    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [1]))
+    s = load_session(session_dir)
+    with pytest.raises(SessionError, match="pulse 0"):
+        s.command_time(0)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "where"), [(5, "2", "diff"), (6, "300", "numSV"), (15, "-1", "vAcc_mm")]
+)
+def test_more_out_of_range_pvt_values_refuse(session_dir, column, value, where):
+    edit_csv(session_dir / "pvt.csv", set_cells(column, value, [5]))
+    with pytest.raises(SessionError, match=f"pvt.csv:6 {where}"):
+        load_session(session_dir)
+
+
+def test_unreadable_files_are_session_errors(session_dir):
+    (session_dir / "pvt.csv").write_bytes(b"\xff\xfe\x00")
+    with pytest.raises(SessionError, match="pvt.csv"):
+        load_session(session_dir)
+    (session_dir / "session.json").write_bytes(b"\xff\xfe\x00")
+    with pytest.raises(SessionError, match="session.json"):
+        load_session(session_dir)

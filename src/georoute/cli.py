@@ -69,7 +69,11 @@ def _session_report(args) -> int:
         return 2
     print(format_report(report))
     if args.json:
-        args.json.write_text(json.dumps(report, indent=2))
+        try:
+            args.json.write_text(json.dumps(report, indent=2))
+        except OSError as e:
+            print(f"ERROR can't write {args.json}: {e}", file=sys.stderr)
+            return 1
     return 1 if report["errors"] else 0
 
 

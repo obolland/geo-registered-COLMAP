@@ -361,3 +361,53 @@ def test_finder_companion_files_are_ignored(tmp_path):
     )
     (cam / "._IMG_0001.JPG").write_bytes(b"Mac OS X        \x00\x05\x16\x07")
     assert [p.name for p in read_photos(tmp_path)[0]] == ["IMG_0001.JPG"]
+
+
+@pytest.mark.parametrize(("offset_s", "ok"), [(0.02, True), (0.04, False)])
+def test_interval_tolerance_boundary(session, offset_s, ok):
+    photos = _photos_for(session, 0)
+    photos[8] = Photo(photos[8].path, 0, None, photos[8].taken_s + offset_s, 0.001, 18.0, "0120")
+    photos[9:] = [Photo(p.path, 0, None, p.taken_s + offset_s, 0.001, 18.0, "0120") for p in photos[9:]]
+    if ok:
+        assert len(match_photos(session, {0: photos})) == 19
+    else:
+        with pytest.raises(MatchError, match="IMG_0415.JPG"):
+            match_photos(session, {0: photos})
+
+
+@needs_exiftool
+def test_an_exiftool_error_refuses_and_a_warning_is_reported(tmp_path, monkeypatch):
+    import georoute.photos as photos_module
+
+    cam = tmp_path / "cam0"
+    cam.mkdir()
+    Image.new("RGB", (8, 8)).save(cam / "IMG_0001.JPG")
+    subprocess.run(
+        [
+            "exiftool",
+            "-q",
+            "-overwrite_original",
+            "-DateTimeOriginal=2026:11:08 14:43:08",
+            "-ExposureTime=0.001",
+            str(cam / "IMG_0001.JPG"),
+        ],
+        check=True,
+    )
+    real_run = subprocess.run
+
+    def fake(stderr):
+        def run(*args, **kwargs):
+            result = real_run(*args, **kwargs)
+            return subprocess.CompletedProcess(result.args, 0, result.stdout, stderr)
+
+        return run
+
+    monkeypatch.setattr(
+        photos_module.subprocess, "run", fake("Warning: [minor] Bad MakerNotes - IMG_0001.JPG\n")
+    )
+    warnings = []
+    assert read_photos(tmp_path, warnings=warnings)[0]
+    assert any("Bad MakerNotes" in w for w in warnings)
+    monkeypatch.setattr(photos_module.subprocess, "run", fake("Error: File format error - IMG_0001.JPG\n"))
+    with pytest.raises(MatchError, match="cam0.*File format error"):
+        read_photos(tmp_path)

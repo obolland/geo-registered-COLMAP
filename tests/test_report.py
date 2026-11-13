@@ -136,18 +136,6 @@ def test_a_position_step_the_velocity_does_not_explain_is_reported(session_dir):
     assert any("position jumps" in w for w in r["warnings"])
 
 
-def test_a_moving_base_station_is_an_error(session_dir):
-    from georoute.rtcm import encode_1005
-
-    (session_dir / "rtcm.bin").write_bytes(
-        encode_1005(3527, (4006364.0, -294184.9, 4937580.8))
-        + encode_1005(3527, (4006370.0, -294184.9, 4937580.8))
-    )
-    r = session_report(load_session(session_dir))
-    assert any("base station moved" in e for e in r["errors"])
-    assert len(r["base"]) == 2
-
-
 def test_a_missing_corrections_log_warns(session_dir):
     r = session_report(load_session(session_dir))
     assert any("rtcm.bin" in w for w in r["warnings"]) and r["base"] == []
@@ -160,3 +148,31 @@ def test_field_test_1_jumps_and_base():
     r = session_report(load_session(FT1))
     assert r["pvt"]["position_jumps"]["count"] == 1
     assert [b["station"] for b in r["base"]] == [3527]
+
+
+def test_ntrip_reconnects_and_a_missing_base_message_warn(session_dir):
+    meta = json.loads((session_dir / "session.json").read_text())
+    meta["counts"]["ntrip_policy_reconnects"] = 1
+    (session_dir / "session.json").write_text(json.dumps(meta))
+    (session_dir / "rtcm.bin").write_bytes(b"\xd3\x00\x00junk")
+    r = session_report(load_session(session_dir))
+    assert any("ntrip_policy_reconnects" in w for w in r["warnings"])
+    assert any("no base position message" in w for w in r["warnings"])
+
+
+def test_a_changing_reference_position_warns_rather_than_refuses(session_dir):
+    from georoute.rtcm import encode_1005
+
+    (session_dir / "rtcm.bin").write_bytes(
+        encode_1005(3527, (4006364.0, -294184.9, 4937580.8))
+        + encode_1005(3527, (4006370.0, -294184.9, 4937580.8))
+    )
+    r = session_report(load_session(session_dir))
+    assert not any("base" in e for e in r["errors"])
+    assert any("reference position changed" in w for w in r["warnings"])
+
+
+def test_report_json_to_an_unwritable_path_is_a_clean_error(session_dir, tmp_path, capsys):
+    (tmp_path / "file").write_text("")
+    assert main(["session-report", str(session_dir), "--json", str(tmp_path / "file" / "r.json")]) == 1
+    assert "ERROR" in capsys.readouterr().err

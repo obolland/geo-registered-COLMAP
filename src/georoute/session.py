@@ -146,8 +146,8 @@ def _read_meta(path: Path) -> tuple[dict, str]:
     for name in ("session.json", "session.json.tmp"):
         if (path / name).exists():
             try:
-                meta = json.loads((path / name).read_text())
-            except json.JSONDecodeError as e:
+                meta = json.loads((path / name).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
                 raise SessionError(f"{name} is not valid JSON: {e}") from e
             settings = meta.get("settings") if isinstance(meta, dict) else None
             if not isinstance(settings, dict):
@@ -201,8 +201,11 @@ class _Row:
 def _rows(path: Path, header: list[str], warnings: list[str]) -> list[_Row]:
     if not path.exists():
         raise SessionError(f"{path.name} is missing from {path.parent}")
-    with open(path, newline="") as f:
-        lines = list(csv.reader(f))
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            lines = list(csv.reader(f))
+    except (OSError, UnicodeDecodeError) as e:
+        raise SessionError(f"can't read {path.name}: {e}") from e
     if not lines or lines[0] != header:
         raise SessionError(
             f"{path.name} header is {lines[0] if lines else None}, expected contract v1 {header}"
@@ -239,20 +242,23 @@ def _read_pulses(path: Path, warnings: list[str]) -> list[Pulse]:
 
 
 def _read_tm2(path: Path, warnings: list[str]) -> dict[int, Tm2]:
+    """Rows that aren't valid GPS time are kept (command_time refuses them) without range-checking their
+    time fields, which the receiver may leave unset."""
     rows: dict[int, Tm2] = {}
     for r in _rows(path, TM2_HEADER, warnings):
         n = r.integer("pulse_n", 0)
         _check_unique(set(rows), r, n)
-        rising = _edge_time(r, "R")
-        if r.text("towMsF"):
-            falling = _edge_time(r, "F")
-            if not 0 < falling - rising < 1.0:
-                raise SessionError(
-                    f"{r.where} falling edge is {falling - rising:+.3f} s from the rising edge"
-                )
-        rows[n] = Tm2(
-            n, rising, r.integer("timeBase", 0, 2), r.text("timeValid") == "1", r.integer("accEst_ns", 0)
-        )
+        time_base, valid = r.integer("timeBase", 0, 2), r.text("timeValid") == "1"
+        rising = math.nan
+        if time_base == 1 and valid:
+            rising = _edge_time(r, "R")
+            if r.text("towMsF"):
+                falling = _edge_time(r, "F")
+                if not 0 < falling - rising < 1.0:
+                    raise SessionError(
+                        f"{r.where} falling edge is {falling - rising:+.3f} s from the rising edge"
+                    )
+        rows[n] = Tm2(n, rising, time_base, valid, r.integer("accEst_ns", 0))
     return rows
 
 

@@ -103,9 +103,9 @@ def _base(s: Session, errors: list[str], warnings: list[str]) -> list[dict]:
     if not found:
         warnings.append("rtcm.bin has no base position message (1005/1006)")
     elif len(found) > 1:
-        errors.append(
-            f"the base station moved during the session: {len(found)} different reference positions"
-        )
+        # A virtual reference station may legitimately move with the rover; real discontinuities show up as
+        # position jumps against Doppler.
+        warnings.append(f"the base reference position changed during the session ({len(found)} positions)")
     return found
 
 
