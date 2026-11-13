@@ -83,3 +83,9 @@ All four files are complete and committed.
 - Slice 5 done (review: `research/reviews/slice5-review.md`, fixes committed). Carry into slice 6: on a straight stretch the antenna track can't fix rotation about the direction of travel, so the lever arm (about 0.25-0.36 m) is unobservable from positions alone. A whole build with bends is fine; long straight segments need another constraint (gravity from camera up vectors or the road plane, or the rig's nominal attitude). Also for slice 6: add a cam_from_rig helper expressed relative to a reference camera (COLMAP rig convention).
 
 Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
+
+## PPK check on field test 1 (2026-11-13)
+
+- Inputs are complete for PPK: `receiver.ubx` has 1415 RAWX epochs (about 51 measurements each, one gap over 0.25 s), and `rtcm.bin` carries MSM4 for GPS/GLO/GAL/BDS from a single fixed base (one 1005 position, about 12.5 km from the walk).
+- The six float stretches (3.4-20.6 s) are not caused by correction latency or satellite loss: corrAge and numSV (median 30) are the same as in fixed epochs. That is the pattern a combined forward-backward PPK pass usually bridges, because the backward pass enters each stretch with ambiguities already fixed. Likely beneficial, not yet measured.
+- The actual PPK run is pending: building RTKLIB (rtklibexplorer demo5) was blocked by the auto-mode permission check, so it needs Olly to allow it or build it himself.
