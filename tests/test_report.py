@@ -121,3 +121,42 @@ def test_cli_distinguishes_unreadable_sessions_and_writes_json(session_dir, tmp_
     assert json.loads(out.read_text())["pulses"]["total"] == 20
     (session_dir / "pvt.csv").unlink()
     assert main(["session-report", str(session_dir)]) == 2
+
+
+def _shift_east(rows, from_row, metres=1.5):
+    for r in rows[from_row:]:
+        r[8] = f"{float(r[8]) + metres / (111320 * 0.6269):.7f}"
+    return rows
+
+
+def test_a_position_step_the_velocity_does_not_explain_is_reported(session_dir):
+    edit_csv(session_dir / "pvt.csv", lambda rows: _shift_east(rows, 44))
+    r = session_report(load_session(session_dir))
+    assert r["pvt"]["position_jumps"]["count"] == 1
+    assert any("position jumps" in w for w in r["warnings"])
+
+
+def test_a_moving_base_station_is_an_error(session_dir):
+    from georoute.rtcm import encode_1005
+
+    (session_dir / "rtcm.bin").write_bytes(
+        encode_1005(3527, (4006364.0, -294184.9, 4937580.8))
+        + encode_1005(3527, (4006370.0, -294184.9, 4937580.8))
+    )
+    r = session_report(load_session(session_dir))
+    assert any("base station moved" in e for e in r["errors"])
+    assert len(r["base"]) == 2
+
+
+def test_a_missing_corrections_log_warns(session_dir):
+    r = session_report(load_session(session_dir))
+    assert any("rtcm.bin" in w for w in r["warnings"]) and r["base"] == []
+
+
+@needs_ft1
+def test_field_test_1_jumps_and_base():
+    from conftest import FT1
+
+    r = session_report(load_session(FT1))
+    assert r["pvt"]["position_jumps"]["count"] == 1
+    assert [b["station"] for b in r["base"]] == [3527]

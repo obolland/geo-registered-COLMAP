@@ -135,3 +135,12 @@ def test_lost_3d_fix_is_flagged_and_accuracy_is_interpolated():
     q = antenna_positions(track, [T0 + 3.9, T0 + 0.1], nav_period_s=PERIOD)
     assert q.flags[0] == ["no-3d-fix"]
     assert q.h_acc_m[1] == pytest.approx(0.0105)
+
+
+def test_photos_bracketed_by_a_position_jump_are_flagged():
+    track = _track(lambda t: [t, 0, 0], lambda t: [1, 0, 0])
+    lat = track.lat_deg.copy()
+    lat[20:] += 1.5 / 111250
+    track = PvtTrack(**{**track.__dict__, "lat_deg": lat})
+    q = antenna_positions(track, [T0 + 3.9, T0 + 3.7, T0 + 4.1], nav_period_s=PERIOD)
+    assert q.flags == [["jump"], [], []]

@@ -2,11 +2,15 @@
 
 import numpy as np
 
+from georoute.rtcm import base_positions
 from georoute.session import CAMERA_COUNT, Session, SessionError
+from georoute.trajectory import position_jumps
 
 # Lost pulse rows break photo-to-pulse matching; the others show up in the data the report checks.
 FATAL_COUNTERS = ("pulses_lost",)
 WARNING_COUNTERS = (
+    "ntrip_connects",
+    "ntrip_policy_reconnects",
     "rx_ring_lost",
     "sync_late",
     "tm2_unmatched",
@@ -57,6 +61,12 @@ def session_report(s: Session) -> dict:
             if key in counts and counts[key] != value:
                 warnings.append(f"session.json says {key} {counts[key]}, the data has {value}")
     errors += [f"logger counter {k} is {counts[k]}" for k in FATAL_COUNTERS if counts.get(k)]
+    if pvt["position_jumps"]["count"]:
+        warnings.append(
+            f"{pvt['position_jumps']['count']} position jumps the Doppler velocity doesn't explain, "
+            f"first at epoch {pvt['position_jumps']['first_epochs'][0]}; photos there are flagged"
+        )
+    base = _base(s, errors, warnings)
     warnings += [f"logger counter {k} is {counts[k]}" for k in WARNING_COUNTERS if counts.get(k)]
 
     return {
@@ -78,14 +88,31 @@ def session_report(s: Session) -> dict:
             for c in range(CAMERA_COUNT)
         },
         "pvt": pvt,
+        "base": base,
         "errors": errors,
         "warnings": warnings,
     }
 
 
+def _base(s: Session, errors: list[str], warnings: list[str]) -> list[dict]:
+    path = s.path / "rtcm.bin"
+    if not path.exists():
+        warnings.append("no rtcm.bin: the base station can't be checked")
+        return []
+    found = [{"station": b.station, "ecef": list(b.ecef), "messages": b.count} for b in base_positions(path)]
+    if not found:
+        warnings.append("rtcm.bin has no base position message (1005/1006)")
+    elif len(found) > 1:
+        errors.append(
+            f"the base station moved during the session: {len(found)} different reference positions"
+        )
+    return found
+
+
 def _pvt_summary(s: Session) -> dict:
     t, carr, period = s.pvt.gps_time_s, s.pvt.carr_soln, s.nav_period_s
     steps = np.diff(t)
+    jumps = position_jumps(s.pvt)
     missed = int(np.sum(np.maximum(np.rint(steps / period) - 1, 0)))
     speed = np.hypot(s.pvt.vel_ned_mps[:, 0], s.pvt.vel_ned_mps[:, 1])
     best = (0, 0)
@@ -105,6 +132,10 @@ def _pvt_summary(s: Session) -> dict:
             "none": int(np.sum(carr == 0)),
         },
         "missed_epochs": missed,
+        "position_jumps": {
+            "count": int(jumps.sum()),
+            "first_epochs": [int(k) + 1 for k in np.flatnonzero(jumps)[:5]],
+        },
         "largest_gap_s": float(steps.max()) if len(steps) else 0.0,
         "median_h_acc_m": float(np.median(s.pvt.h_acc_m)),
         "longest_non_fixed_run": {

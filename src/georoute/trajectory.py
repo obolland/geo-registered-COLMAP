@@ -9,6 +9,8 @@ from georoute.geodesy import lla_to_ecef, ned_to_ecef
 from georoute.session import PvtTrack
 
 GAP_FACTOR = 1.5
+# Field test 1: steps between fixed epochs differ from integrated Doppler by 33 mm median, 94 mm p99.
+JUMP_THRESHOLD_M = 0.25
 
 
 class TrajectoryError(ValueError):
@@ -29,6 +31,16 @@ class AntennaPositions:
 def exposure_mid(t_command: float, delay_us: int, exposure_s: float, curtain_travel_s: float = 0.0) -> float:
     """Mid-exposure GPS time: hot-shoe X-sync time plus half the exposure, minus half the curtain travel."""
     return t_command + delay_us * 1e-6 + exposure_s / 2 - curtain_travel_s / 2
+
+
+def position_jumps(track: PvtTrack, threshold_m: float = JUMP_THRESHOLD_M) -> np.ndarray:
+    """Per step between consecutive epochs: whether the position moved by more than the receiver's own
+    Doppler velocity explains. Velocity doesn't depend on carrier ambiguities, so this catches false fixes,
+    base changes and corrupt rows that carrSoln and hAcc can't."""
+    ecef = lla_to_ecef(track.lat_deg, track.lon_deg, track.height_m)
+    vel = ned_to_ecef(track.lat_deg, track.lon_deg, track.vel_ned_mps)
+    predicted = (vel[1:] + vel[:-1]) / 2 * np.diff(track.gps_time_s)[:, None]
+    return np.linalg.norm(np.diff(ecef, axis=0) - predicted, axis=1) > threshold_m
 
 
 def antenna_positions(track: PvtTrack, times, nav_period_s: float = 0.2) -> AntennaPositions:
@@ -60,6 +72,7 @@ def antenna_positions(track: PvtTrack, times, nav_period_s: float = 0.2) -> Ante
     w = s[:, 0]
     carr = np.minimum(track.carr_soln[i], track.carr_soln[i + 1])
     fix = np.minimum(track.fix_type[i], track.fix_type[i + 1])
+    jumps = position_jumps(track)[i]
     flags = [
         [
             name
@@ -67,10 +80,11 @@ def antenna_positions(track: PvtTrack, times, nav_period_s: float = 0.2) -> Ante
                 ("not-fixed", c < 2),
                 ("no-3d-fix", f < 3),
                 ("gap", g > GAP_FACTOR * nav_period_s),
+                ("jump", j),
             )
             if bad
         ]
-        for c, f, g in zip(carr, fix, h, strict=True)
+        for c, f, g, j in zip(carr, fix, h, jumps, strict=True)
     ]
     return AntennaPositions(
         ecef=pos,
