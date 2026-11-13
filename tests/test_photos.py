@@ -299,3 +299,65 @@ def test_unreadable_files_and_strays_refuse(tmp_path):
     Image.new("RGB", (8, 8)).save(cam / "IMG_0002.jpeg")
     with pytest.raises(MatchError, match="cam0.*IMG_0002.jpeg"):
         read_photos(tmp_path)
+
+
+def test_an_expected_serial_with_photos_lacking_one_refuses(session):
+    photos = [Photo(p.path, 0, None, p.taken_s, 0.001, 18.0, None) for p in _photos_for(session, 0)]
+    with pytest.raises(MatchError, match="cam0.*no serial"):
+        match_photos(session, {0: photos}, serials={0: "9999"})
+
+
+def test_gaps_are_checked_in_canon_file_numbers_when_ordering_by_them():
+    def photo(name, number, t):
+        return Photo(f"cam0/{name}", 0, number, t, 0.001, 18, None)
+
+    with pytest.raises(MatchError, match="IMG_0003.JPG"):
+        order_photos(
+            [
+                photo("IMG_0001.JPG", 1000001, 1.0),
+                photo("IMG_0002.JPG", 1000002, 2.0),
+                photo("IMG_0003.JPG", 1000004, 3.0),
+            ]
+        )
+    assert len(order_photos([photo("IMG_9999.JPG", 1009999, 1.0), photo("IMG_0001.JPG", 1010001, 2.0)])) == 2
+
+
+@pytest.mark.parametrize("exposure", [0.0, -0.001, 40.0])
+def test_implausible_exposure_refuses(exposure):
+    record = {"SourceFile": "/x/cam0/IMG_1.JPG", "DateTimeOriginal": "2026:11:08 14:43:08"}
+    record["ExposureTime"] = exposure
+    with pytest.raises(MatchError, match="cam0/IMG_1.JPG.*exposure"):
+        photos_from_exiftool([record], camera=0, root=Path("/x"))
+
+
+def test_a_single_photo_camera_warns_that_it_cant_be_verified(session):
+    pulses = [
+        type(p)(p.n, p.kind, p.cmd_ticks_us, (p.delays_us[0], 95000 if p.n == 5 else None, None, None))
+        for p in session.pulses
+    ]
+    session = type(session)(
+        session.path, session.meta, session.meta_file, pulses, session.tm2, session.pvt, []
+    )
+    warnings = []
+    match_photos(session, {0: _photos_for(session, 0), 1: _photos_for(session, 1)}, warnings=warnings)
+    assert any("cam1" in w and "single photo" in w for w in warnings)
+
+
+@needs_exiftool
+def test_finder_companion_files_are_ignored(tmp_path):
+    cam = tmp_path / "cam0"
+    cam.mkdir()
+    Image.new("RGB", (8, 8)).save(cam / "IMG_0001.JPG")
+    subprocess.run(
+        [
+            "exiftool",
+            "-q",
+            "-overwrite_original",
+            "-DateTimeOriginal=2026:11:08 14:43:08",
+            "-ExposureTime=0.001",
+            str(cam / "IMG_0001.JPG"),
+        ],
+        check=True,
+    )
+    (cam / "._IMG_0001.JPG").write_bytes(b"Mac OS X        \x00\x05\x16\x07")
+    assert [p.name for p in read_photos(tmp_path)[0]] == ["IMG_0001.JPG"]

@@ -28,6 +28,7 @@ EXIF_TAGS = [
 ]
 NAME_NUMBER = re.compile(r"(\d+)$")
 FILE_NUMBERS_PER_FOLDER = 9999
+MAX_EXPOSURE_S = 30.0
 
 
 class MatchError(ValueError):
@@ -62,7 +63,9 @@ class Match:
     pulse: Pulse
 
 
-def read_photos(images_root, folders: dict[int, str] | None = None) -> dict[int, list[Photo]]:
+def read_photos(
+    images_root, folders: dict[int, str] | None = None, warnings: list[str] | None = None
+) -> dict[int, list[Photo]]:
     """Photos per camera from images_root/<folder>; folders default to cam0..cam3, absent ones are skipped."""
     if shutil.which("exiftool") is None:
         raise MatchError("exiftool is not installed")
@@ -71,24 +74,40 @@ def read_photos(images_root, folders: dict[int, str] | None = None) -> dict[int,
     out = {}
     for camera, folder in folders.items():
         if (root / folder).is_dir():
-            out[camera] = _read_folder(root, root / folder, camera)
+            out[camera] = _read_folder(root, root / folder, camera, warnings)
     return out
 
 
-def _read_folder(root: Path, folder: Path, camera: int) -> list[Photo]:
+def _read_folder(root: Path, folder: Path, camera: int, warnings: list[str] | None = None) -> list[Photo]:
     strays = [p.name for p in folder.iterdir() if not p.name.startswith(".") and p.suffix.lower() != ".jpg"]
     if strays:
         raise MatchError(f"cam{camera}: {folder} holds files that aren't .jpg photos: {sorted(strays)[:5]}")
     result = subprocess.run(
-        ["exiftool", "-json", "-n", "-ext", "jpg", *(f"-{t}" for t in EXIF_TAGS), str(folder)],
+        [
+            "exiftool",
+            "-json",
+            "-n",
+            "-i",
+            "HIDDEN",
+            "-ext",
+            "jpg",
+            *(f"-{t}" for t in EXIF_TAGS),
+            str(folder),
+        ],
         capture_output=True,
         text=True,
     )
-    problems = [line for line in result.stderr.splitlines() if line.startswith(("Error", "Warning"))]
-    if result.returncode != 0 or problems:
+    errors = [line for line in result.stderr.splitlines() if line.startswith("Error")]
+    if result.returncode != 0 or errors:
         raise MatchError(
-            f"cam{camera}: exiftool couldn't read every photo: {problems or result.stderr.strip()}"
+            f"cam{camera}: exiftool couldn't read every photo: {errors or result.stderr.strip()}"
         )
+    if warnings is not None:
+        warnings += [
+            f"cam{camera}: exiftool {line}"
+            for line in result.stderr.splitlines()
+            if line.startswith("Warning")
+        ]
     try:
         records = json.loads(result.stdout) if result.stdout.strip() else []
     except json.JSONDecodeError as e:
@@ -110,6 +129,8 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
             )
             taken += float(f"0.{subsec}") if subsec else 0.0
             exposure = float(r["ExposureTime"])
+            if not 0 < exposure <= MAX_EXPOSURE_S:
+                raise ValueError(f"exposure {exposure} s is outside 0 to {MAX_EXPOSURE_S} s")
         except ValueError as e:
             raise MatchError(f"cam{camera}: {path} has unreadable EXIF time or exposure: {e}") from None
         serial = r.get("SerialNumber")
@@ -143,9 +164,18 @@ def order_photos(photos: list[Photo]) -> list[Photo]:
             raise MatchError(
                 f"cam{after.camera}: {after.path} is earlier on the camera clock than {before.path}"
             )
-        if unwrapped[after.path] != unwrapped[before.path] + 1:
-            raise MatchError(f"cam{after.camera}: file numbers jump from {before.name} to {after.name}")
+        if not _consecutive(before, after, unwrapped, all(with_number)):
+            field = "Canon FileNumbers" if all(with_number) else "file numbers"
+            raise MatchError(f"cam{after.camera}: {field} jump from {before.name} to {after.name}")
     return ordered
+
+
+def _consecutive(before: Photo, after: Photo, unwrapped: dict[str, int], by_file_number: bool) -> bool:
+    if not by_file_number:
+        return unwrapped[after.path] == unwrapped[before.path] + 1
+    folder, number = divmod(before.file_number, 10000)
+    following = (folder + 1) * 10000 + 1 if number == FILE_NUMBERS_PER_FOLDER else before.file_number + 1
+    return after.file_number == following
 
 
 def _unwrapped_name_numbers(photos: list[Photo]) -> dict[str, int]:
@@ -163,7 +193,10 @@ def _same_serial(a: str, b: str) -> bool:
 
 
 def match_photos(
-    session: Session, photos: dict[int, list[Photo]], serials: dict[int, str] | None = None
+    session: Session,
+    photos: dict[int, list[Photo]],
+    serials: dict[int, str] | None = None,
+    warnings: list[str] | None = None,
 ) -> list[Match]:
     matches, bodies = [], {}
     for camera in range(CAMERA_COUNT):
@@ -179,12 +212,22 @@ def match_photos(
             raise MatchError(f"{summary}; {str(e).removeprefix(f'cam{camera}: ')}") from None
         _check_alignment(session, camera, ordered, pulses, summary)
         _check_body(camera, ordered, (serials or {}).get(camera), bodies)
+        if len(ordered) == 1 and warnings is not None:
+            warnings.append(
+                f"cam{camera}: a single photo, so its match can't be checked against pulse intervals"
+            )
         matches += [Match(photo, pulse) for photo, pulse in zip(ordered, pulses, strict=True)]
     return sorted(matches, key=lambda m: (m.pulse.n, m.photo.camera))
 
 
 def _check_body(camera: int, photos: list[Photo], expected: str | None, bodies: dict[str, int]):
     found = {p.serial for p in photos if p.serial is not None}
+    if expected is not None:
+        missing = [p.path for p in photos if p.serial is None]
+        if missing:
+            raise MatchError(
+                f"cam{camera}: {missing[0]} has no serial, so it can't be checked against {expected}"
+            )
     if len({s.lstrip("0") for s in found}) > 1:
         raise MatchError(f"cam{camera} holds photos from more than one camera body: {sorted(found)}")
     for serial in found:
