@@ -94,3 +94,10 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
   - Caveats from the deepseek review: the Doppler adjudication is clearest vertically; horizontally over the last 33 s it leans to the live fix but less decisively; one 90-120 s cluster of PPK's extra fixes does agree with Doppler to 0.1 m. The PPK inputs and commands are in the session scratchpad, not the repo.
   - Verdict: on this data PPK is not beneficial; the live F9P RTK is the more reliable solution. Don't build a PPK stage now. Keep logging RAWX and RTCM as insurance and revisit only if field test 2 has long float stretches (an own 1-5 Hz base would be the stronger option then).
   - Method lesson: judge PPK by consistency checks (Doppler, epoch jumps, agreement where both are fixed), never by fix rate alone.
+
+## Cross-model review of track 1 (2026-11-13)
+
+- Deepseek red team: `research/reviews/track1-deepseek-review.md`; triage: `track1-triage.md`; verification of the fixes: `track1-fixes-review.md`. All "fix in track 1" rows are now fixed and tested (commits 4fa2e8d to 78389ad), 257 tests.
+- Decisions taken: a changing base reference position warns (a VRS may move with the rover) and real discontinuities are caught by the Doppler jump check; the 0.25 m jump threshold is calibrated on a walk and must be re-checked on cycling data; invalid TM2 rows only refuse when a photographed pulse needs them.
+- Deferred nits: float photos keep a prior at the receiver's hAcc and gaps don't inflate sigma (revisit with COLMAP in slice 6); the falling-edge check allows 0-1 s rather than about 50 ms; photo files aren't hashed into provenance; the stopped-early threshold is an absolute 10 pulses.
+- Process lesson: scripted edits must assert that each replacement matched (three tests had silently not landed in the slice 5 fixes).
