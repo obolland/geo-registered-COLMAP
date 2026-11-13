@@ -35,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--rig", type=Path, help="rig config giving camera folders, serials and curtain travel")
     run.add_argument(
+        "--allow-unmeasured-rig", action="store_true", help="accept a rig with placeholder geometry"
+    )
+    run.add_argument(
         "--curtain-travel-ms", type=float, help="overrides the rig's value (default 0 without a rig)"
     )
     run.epilog = "exit status: 0 ok, 1 refused (integrity, matching or positioning), 2 session unreadable"
@@ -77,10 +80,17 @@ def _match(args) -> int:
         print(f"ERROR {e}", file=sys.stderr)
         return 2
     try:
-        matches = match_photos(session, *photo_sources(args.images_root, _rig(args)))
-    except (MatchError, RigError) as e:
+        report = session_report(session)
+        if report["errors"]:
+            raise MatchError("session integrity errors: " + "; ".join(report["errors"]))
+        warnings: list[str] = []
+        photos, serials = photo_sources(args.images_root, _rig(args), warnings)
+        matches = match_photos(session, photos, serials, warnings)
+    except (MatchError, RigError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
+    for warning in warnings:
+        print(f"WARNING {warning}", file=sys.stderr)
     for camera in sorted({m.photo.camera for m in matches}):
         mine = [m for m in matches if m.photo.camera == camera]
         warmups = sum(m.pulse.kind == "warmup" for m in mine)
@@ -91,16 +101,23 @@ def _match(args) -> int:
 def _ingest(args) -> int:
     try:
         curtain = None if args.curtain_travel_ms is None else args.curtain_travel_ms / 1000
-        summary = ingest(args.session_dir, args.images_root, args.out, curtain, _rig(args))
+        summary = ingest(
+            args.session_dir,
+            args.images_root,
+            args.out,
+            curtain,
+            _rig(args),
+            allow_unmeasured_rig=args.allow_unmeasured_rig,
+        )
     except SessionError as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 2
-    except (IngestError, MatchError, TrajectoryError, RigError) as e:
+    except (IngestError, MatchError, TrajectoryError, RigError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     flagged = ", ".join(f"{k} {v}" for k, v in summary["flagged"].items())
-    if summary.get("rig_measured") is False:
-        print("WARNING the rig config is marked unmeasured: its geometry is placeholder", file=sys.stderr)
+    for warning in summary["warnings"]:
+        print(f"WARNING {warning}", file=sys.stderr)
     print(
         f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped); "
         f"flagged: {flagged}; written to {args.out}"

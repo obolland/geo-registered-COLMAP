@@ -106,6 +106,8 @@ def load_rig(path) -> Rig:
         _check_keys(doc[table], table)
     if not doc.get("camera"):
         raise RigError(f"{path.name} has no cameras")
+    if not isinstance(doc["camera"], list) or not all(isinstance(c, dict) for c in doc["camera"]):
+        raise RigError(f"{path.name} camera must be [[camera]] tables")
     cameras = []
     for entry in doc["camera"]:
         _check_keys(entry, "camera")
