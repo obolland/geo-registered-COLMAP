@@ -1,0 +1,68 @@
+{
+ "settings": {
+  "camera_count": 4,
+  "receiver_baud": 230400,
+  "trigger_mode": "distance",
+  "sync_edge": "falling",
+  "rx_ring_bytes": 16384,
+  "min_speed_mm_s": 300,
+  "ntrip_port": 2101,
+  "nav_period_ms": 200,
+  "ntrip_mountpoint": "LOCAL",
+  "datum": "ETRS89",
+  "warmup_pulses": 2,
+  "pulse_ms": 50,
+  "trigger_interval_ms": 500,
+  "ntrip_host": "truertk-eu.pointonenav.com",
+  "trigger_distance_mm": 800,
+  "min_interval_ms": 400
+ },
+ "receiver_config": {
+  "0x20910179": 1,
+  "0x10750004": 1,
+  "0x20910007": 1,
+  "0x20910232": 1,
+  "0x10740002": 0,
+  "0x10740001": 1,
+  "0x30210001": 200,
+  "0x2005000C": 1,
+  "0x209102A5": 1
+ },
+ "start_utc": "2026-11-08T15:37:31Z",
+ "stop_utc": "2026-11-08T15:42:14Z",
+ "commit": null,
+ "receiver": {
+  "hwVersion": "00190000",
+  "extensions": [
+   "ROM BASE 0x118B2060",
+   "FWVER=HPG 1.51",
+   "PROTVER=27.50",
+   "MOD=ZED-F9P",
+   "GPS;GLO;GAL;BDS",
+   "SBAS;QZSS"
+  ],
+  "swVersion": "EXT CORE 1.00 (9e1716)"
+ },
+ "rig_offsets": null,
+ "counts": {
+  "sync_late": 0,
+  "pulses_rows": 20,
+  "pvt_rows": 74,
+  "ntrip_connects": 0,
+  "ntrip_policy_reconnects": 0,
+  "missed_epochs": 1,
+  "markers_sent": 1,
+  "discarded_bytes": 1160,
+  "rtcm_dropped_at_uart": 0,
+  "tm2_unmatched": 0,
+  "decode_errors": 0,
+  "tm2_rows": 20,
+  "tm2_first_count": 2,
+  "checksum_errors": 0,
+  "rx_ring_lost": 3020,
+  "pulses": 20,
+  "ubx_bytes": 2660956,
+  "rtcm_bytes": 413199,
+  "pulses_lost": 0
+ }
+}
