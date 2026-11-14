@@ -334,3 +334,31 @@ def test_photos_on_recovered_pulses_are_flagged(session_dir, tmp_path):
     images = json.loads((tmp_path / "out" / "images.json").read_text())["images"]
     assert [i["pulse"] for i in images if "time-recovered" in i["flags"]] == [6]
     assert summary["flagged"]["time-recovered"] == 1
+
+
+@needs_exiftool
+def test_a_faulty_rig_camera_with_no_exposures_is_accepted_when_acknowledged(session_dir, tmp_path):
+    _stubs_for(load_session(session_dir), tmp_path / "images")
+    rig = load_rig(_rig_file(tmp_path, measured=False, cameras=(0, 1)))
+    summary = ingest(
+        session_dir,
+        tmp_path / "images",
+        tmp_path / "out",
+        rig=rig,
+        allow_unmeasured_rig=True,
+        camera_faults={1},
+    )
+    assert summary["images"] == 18
+    assert any("cam1" in w and "acknowledged fault" in w for w in summary["warnings"])
+    assert json.loads((tmp_path / "out" / "images.json").read_text())["camera_faults"] == [1]
+
+
+@needs_exiftool
+def test_camera_fault_option(session_dir, tmp_path, capsys):
+    session = load_session(session_dir)
+    _stubs_for(session, tmp_path / "images")
+    for name in ("IMG_0424.JPG", "IMG_0425.JPG"):
+        (tmp_path / "images" / "cam0" / name).unlink()
+    assert main(["match", str(session_dir), str(tmp_path / "images")]) == 1
+    assert main(["match", str(session_dir), str(tmp_path / "images"), "--camera-fault", "0"]) == 0
+    assert "2 exposures" in capsys.readouterr().err

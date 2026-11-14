@@ -52,6 +52,7 @@ def ingest(
     curtain_travel_s: float | None = None,
     rig: Rig | None = None,
     allow_unmeasured_rig: bool = False,
+    camera_faults: set[int] | frozenset[int] = frozenset(),
 ) -> dict:
     """Writes report.json always (with the refusal reason if refused), and images.json and track.png only
     when every capture photo was timed and positioned."""
@@ -76,7 +77,9 @@ def ingest(
         report["session"] = session_report(session)
         if report["session"]["errors"]:
             raise IngestError("session integrity errors: " + "; ".join(report["session"]["errors"]))
-        images, frame, summary = _position_captures(session, images_root, curtain_travel_s, rig)
+        images, frame, summary = _position_captures(
+            session, images_root, curtain_travel_s, rig, frozenset(camera_faults)
+        )
     except Exception as e:
         report["refused"] = str(e)
         if out.is_dir():
@@ -98,6 +101,7 @@ def ingest(
             "curtain_travel_s": curtain_travel_s,
             "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured} if rig else None,
             "serials_seen": summary["serials_seen"],
+            "camera_faults": sorted(camera_faults),
             "coordinates": COORDINATES_NOTE,
             "frame": {
                 "id": f"{session.path.name}/{'rtk-fixed' if summary['rtk_fixed'] else '3d-fix'}",
@@ -128,14 +132,16 @@ def _input_hashes(session_dir: Path) -> dict[str, str]:
     }
 
 
-def _position_captures(session: Session, images_root, curtain_travel_s: float, rig: Rig | None):
+def _position_captures(
+    session: Session, images_root, curtain_travel_s: float, rig: Rig | None, camera_faults: frozenset[int]
+):
     warnings: list[str] = []
     photos, serials = photo_sources(images_root, rig, warnings)
-    matches = match_photos(session, photos, serials, warnings)
+    matches = match_photos(session, photos, serials, warnings, faulty=camera_faults)
     captures = [m for m in matches if m.pulse.kind == "capture"]
     if not captures:
         raise IngestError("no capture photos to position")
-    _check_cameras(session, captures, rig, warnings)
+    _check_cameras(session, captures, rig, warnings, camera_faults)
     delays = [m.pulse.delays_us[m.photo.camera] for m in captures]
     t_mid = np.array(
         [
@@ -199,10 +205,16 @@ def _position_captures(session: Session, images_root, curtain_travel_s: float, r
     return images, frame, summary
 
 
-def _check_cameras(session: Session, captures: list, rig: Rig | None, warnings: list[str]):
+def _check_cameras(
+    session: Session, captures: list, rig: Rig | None, warnings: list[str], camera_faults: frozenset[int]
+):
     """Every rig camera must have exposed, and a camera that stopped well before the end is reported."""
     used = {m.photo.camera for m in captures}
-    for camera in sorted({c.index for c in rig.cameras} - used) if rig else []:
+    for camera in sorted(({c.index for c in rig.cameras} - used) & camera_faults) if rig else []:
+        warnings.append(
+            f"cam{camera} is in the rig but has no exposures in this session (acknowledged fault)"
+        )
+    for camera in sorted({c.index for c in rig.cameras} - used - camera_faults) if rig else []:
         raise IngestError(f"cam{camera} is in the rig but has no exposures in this session")
     last_capture = max(p.n for p in session.pulses if p.kind == "capture")
     for camera in sorted(used):
