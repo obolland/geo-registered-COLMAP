@@ -48,8 +48,8 @@ def test_ingest_refuses_a_session_with_integrity_errors_but_still_writes_the_rep
     from conftest import edit_csv, set_cells
 
     _stubs_for(load_session(session_dir), tmp_path / "images")
-    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [5]))
-    with pytest.raises(IngestError, match="pulse 4"):
+    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [20]))
+    with pytest.raises(IngestError, match="pulse 19"):
         ingest(session_dir, tmp_path / "images", tmp_path / "out")
     assert json.loads((tmp_path / "out" / "report.json").read_text())["session"]["errors"]
 
@@ -322,3 +322,15 @@ def test_a_jump_removes_the_prior(session_dir, tmp_path):
     images = json.loads((tmp_path / "out" / "images.json").read_text())["images"]
     jumped = [i for i in images if "jump" in i["flags"]]
     assert jumped and not any(i["has_prior"] for i in jumped)
+
+
+@needs_exiftool
+def test_photos_on_recovered_pulses_are_flagged(session_dir, tmp_path):
+    from conftest import edit_csv
+
+    _stubs_for(load_session(session_dir), tmp_path / "images")
+    edit_csv(session_dir / "tm2.csv", lambda rows: [r for r in rows if r[0] != "6"])
+    summary = ingest(session_dir, tmp_path / "images", tmp_path / "out")
+    images = json.loads((tmp_path / "out" / "images.json").read_text())["images"]
+    assert [i["pulse"] for i in images if "time-recovered" in i["flags"]] == [6]
+    assert summary["flagged"]["time-recovered"] == 1

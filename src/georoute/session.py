@@ -3,11 +3,13 @@
 import csv
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+
+from georoute.recovery import RecoveredTime, recover_time_marks
 
 CAMERA_COUNT = 4
 WEEK_S = 604800
@@ -106,6 +108,7 @@ class Session:
     tm2: dict[int, Tm2]
     pvt: PvtTrack
     load_warnings: list[str]
+    recovered: dict[int, RecoveredTime] = field(default_factory=dict)
 
     @property
     def clean_stop(self) -> bool:
@@ -122,6 +125,8 @@ class Session:
     def command_time(self, pulse_n: int) -> float:
         """GPS seconds of the pulse's command edge; refuses if the time mark isn't trustworthy."""
         t = self.tm2.get(pulse_n)
+        if pulse_n in self.recovered and (t is None or t.time_base != 1 or not t.time_valid):
+            return self.recovered[pulse_n].gps_s
         if t is None:
             raise SessionError(f"pulse {pulse_n} has no TIM-TM2 row")
         if t.time_base != 1 or not t.time_valid:
@@ -139,7 +144,15 @@ def load_session(path) -> Session:
     pulses = _read_pulses(path / "pulses.csv", warnings)
     tm2 = _read_tm2(path / "tm2.csv", warnings)
     pvt = _read_pvt(path / "pvt.csv", warnings)
-    return Session(path, meta, meta_file, pulses, tm2, pvt, warnings)
+    good = {n: t.rising_gps_s for n, t in tm2.items() if t.time_base == 1 and t.time_valid}
+    recovered = recover_time_marks(
+        {p.n: p.cmd_ticks_us for p in pulses},
+        good,
+        path / "receiver.ubx",
+        int(meta["settings"].get("pulse_ms", 50)),
+        warnings,
+    )
+    return Session(path, meta, meta_file, pulses, tm2, pvt, warnings, recovered)
 
 
 def _read_meta(path: Path) -> tuple[dict, str]:

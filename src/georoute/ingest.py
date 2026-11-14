@@ -153,7 +153,7 @@ def _position_captures(session: Session, images_root, curtain_travel_s: float, r
     epoch = np.searchsorted(session.pvt.gps_time_s, t_mid, side="right") - 1
     images = []
     for k, m in enumerate(captures):
-        flags = antenna.flags[k]
+        flags = antenna.flags[k] + (["time-recovered"] if m.pulse.n in session.recovered else [])
         has_prior = not ({"no-3d-fix", "jump"} & set(flags)) and antenna.carr_soln[k] >= 1
         images.append(
             {
@@ -185,7 +185,8 @@ def _position_captures(session: Session, images_root, curtain_travel_s: float, r
             f"cam{c}": sum(i["camera"] == c for i in images) for c in sorted({i["camera"] for i in images})
         },
         "flagged": {
-            f: sum(f in i["flags"] for i in images) for f in ("not-fixed", "no-3d-fix", "gap", "jump")
+            f: sum(f in i["flags"] for i in images)
+            for f in ("not-fixed", "no-3d-fix", "gap", "jump", "time-recovered")
         },
         "without_prior": sum(not i["has_prior"] for i in images),
         "rtk_fixed": rtk_fixed,
