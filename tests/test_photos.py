@@ -437,3 +437,26 @@ def test_an_acknowledged_fault_allows_a_camera_with_no_photos(session):
     warnings = []
     assert match_photos(session, {}, faulty={0}, warnings=warnings) == []
     assert any("cam0" in w and "no photos" in w for w in warnings)
+
+
+def test_a_fault_camera_that_lost_its_first_photos_is_not_mistaken_for_a_lost_tail(session):
+    steady = _steady(session)
+    photos = _photos_for(steady, 0)[3:]
+    renamed = [
+        Photo(f"cam0/IMG_{407 + k:04d}.JPG", 0, None, p.taken_s, 0.001, 18.0, p.serial)
+        for k, p in enumerate(photos)
+    ]
+    with pytest.raises(MatchError, match="can't tell"):
+        match_photos(steady, {0: renamed}, faulty={0})
+
+
+@pytest.mark.parametrize("kept", [1, 2, 5, 10])
+def test_a_fault_camera_needs_enough_verified_intervals(session, kept):
+    with pytest.raises(MatchError, match="cam0"):
+        match_photos(session, {0: _photos_for(session, 0)[:kept]}, faulty={0})
+
+
+def test_a_fault_on_a_complete_camera_warns(session):
+    warnings = []
+    match_photos(session, {0: _photos_for(session, 0)}, faulty={0}, warnings=warnings)
+    assert any("cam0" in w and "nothing was lost" in w for w in warnings)

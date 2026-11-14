@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TICKS_PERIOD = 2**30  # MicroPython's ticks_us wraps here on the RP2040
-MAX_RATE_ERROR = 200e-6  # the Pico W crystal is +-30 ppm; anything far beyond means the anchors are wrong
+MAX_RATE_ERROR = 50e-6  # the Pico W crystal is +-30 ppm (field test 2: -26 to +21 ppm)
 MAX_ANCHOR_GAP_S = 60.0
+MAX_BRIDGE_PULSES = 10
 FALLING_SEARCH_S = (0.02, 0.2)
-# The pulse ends on the first 10 ms timer tick at or after pulse_ms; allow 1 ms either side.
+# The pulse ends on the first 10 ms timer tick at or after pulse_ms, so the falling edge comes 50-60 ms
+# after the rising edge for a 50 ms pulse; allow 1 ms either side.
 FALLING_SLACK_S = (0.001, 0.011)
 WEEK_S = 604800
 
@@ -40,7 +42,11 @@ def recover_time_marks(
             continue
         a, b = anchors[k - 1], anchors[k]
         span = _ticks_diff(ticks[b], ticks[a]) * 1e-6
-        if span <= 0 or good[b] - good[a] > MAX_ANCHOR_GAP_S:
+        if span <= 0 or good[b] - good[a] > MAX_ANCHOR_GAP_S or b - a > MAX_BRIDGE_PULSES:
+            warnings.append(
+                f"pulse {n} time can't be recovered: its nearest good pulses {a} and {b} are too far "
+                f"apart ({good[b] - good[a]:.1f} s, Pico {span:.1f} s)"
+            )
             continue
         rate = (good[b] - good[a]) / span
         if abs(rate - 1) > MAX_RATE_ERROR:
@@ -57,6 +63,12 @@ def recover_time_marks(
         ]
         expected = (t + pulse_ms / 1000 - FALLING_SLACK_S[0], t + pulse_ms / 1000 + FALLING_SLACK_S[1])
         confirmed = any(expected[0] <= f <= expected[1] for f in nearby)
+        if not confirmed and _has_edge(falling, good[a], pulse_ms) and _has_edge(falling, good[b], pulse_ms):
+            warnings.append(
+                f"pulse {n} time can't be recovered: the receiver logged falling edges for pulses "
+                f"{a} and {b} but no falling edge for this one"
+            )
+            continue
         if nearby and not confirmed:
             warnings.append(
                 f"pulse {n} time can't be recovered: the receiver's falling edge disagrees "
@@ -65,6 +77,12 @@ def recover_time_marks(
             continue
         out[n] = RecoveredTime(t, a, b, confirmed)
     return out
+
+
+def _has_edge(falling: list[float], rising: float, pulse_ms: int) -> bool:
+    lo, hi = rising + pulse_ms / 1000 - FALLING_SLACK_S[0], rising + pulse_ms / 1000 + FALLING_SLACK_S[1]
+    k = bisect_left(falling, lo)
+    return k < len(falling) and falling[k] <= hi
 
 
 def _falling_edges(path: Path) -> list[float]:
