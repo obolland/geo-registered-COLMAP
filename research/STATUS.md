@@ -108,3 +108,12 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 - Focus after refocusing: cam0 2.49-2.96 m, cam1 and cam3 2.13-2.49 m, cam2 2.96-3.73 m (all beyond the 2.1 m hyperfocal at 18 mm f/8). cam0 had a screw-on filter, now removed.
 - Bench test in time mode (sessions 20261114T121925Z and 20261114T122323Z, copied to `~/rigcheck/bench/`): cam1's shutter plug was loose in the first run (0 of 58 exposures); after reseating, all four fired on all 16 pulses after warm-up 0, delays 90-103 ms; cam2's on/off test confirmed the GP8 mapping; `match` 16/16 per camera and `ingest` 60 images, serials read correctly, base station 3527.
 - Pico restored to distance mode afterwards (device config identical to the repo).
+
+## Field test 2 (2026-11-14)
+
+- Sessions `20261114T133719Z` (loop, about 200 x 110 m) and `20261114T134727Z` (about 100 m offset pass); data in `~/fieldtest2` (cards in `cam0..3`, split by hard links into `s1/` and `s2/`, outputs in `out/`). Rig config `rigs/handlebar-4cam-ft2.toml` measured after the ride (cameras level, side cameras 50 degrees off ahead, antenna base as reference, 1.18 m above the road).
+- RTK fixed 99.7% (session 1) and 100% (session 2). Ingest: 2464 images (session 1), 234 (session 2), with `--camera-fault 1`.
+- Problems found and handled: the F9P sent 11 garbled TIM-TM2 messages (count 0, stale rising time), now recovered from Pico ticks and confirmed by the raw falling edge (`recovery.py`); cam1 hit Canon Err 80 and lost its last 9 exposures in session 1 and took nothing in session 2 (`--camera-fault`).
+- Logger issues to fix later: the first pulse after a stop of 5-20 s is missed by every camera (cameras doze; add a warm-up pulse after a pause); 13 KB of RTCM dropped at the UART; the F9P TIM-TM2 count-0 quirk is new since field test 1.
+- Before the next ride: find cam1's Err 80 cause (fresh battery and card, long bench run, swap hot-shoe adapter and cable).
+- Next: slice 6, COLMAP with priors, on session 1.
