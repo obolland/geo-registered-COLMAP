@@ -1,0 +1,57 @@
+# Handlebar rig as ridden in field test 2 (2026-11-14), measured by Olly after the ride.
+#
+# Rig frame: origin at the centre of the ANN-MB3 antenna base on the bar's top face; x to the rider's
+# right, y forward, z up. Camera positions are the centre of each lens's front glass; the sensor plane
+# (the body's mark) is 125 mm behind it along the lens axis, and the true optical centre lies between,
+# to be estimated from the reconstruction in slice 6.
+# Pitch measured with a phone level; roll taken as 0 (cameras sit flat on the bar); yaw from the
+# mounting marks (side cameras 50 degrees off straight ahead). Orientation is applied as yaw, then
+# pitch, then roll (rig z, then x, then y).
+
+schema = "georoute.rig/1.0.0"
+name = "handlebar-4x100d-ft2"
+measured = true
+
+[reference]
+description = "centre of the antenna base on the bar's top face"
+height_above_road_m = 1.18
+
+[antenna]
+arp_in_rig_m = [0.0, 0.0, 0.0]
+# ANN-MB3 phase-centre offset above its base: assumed zero until measured or cited.
+phase_centre_offset_m = [0.0, 0.0, 0.0]
+
+[timing]
+curtain_travel_ms = 0.0
+
+[[camera]]
+index = 0
+role = "right side, angled forward"
+folder = "cam0"
+serial = "363073016649"
+position_in_rig_m = [0.364, 0.093, 0.035]
+yaw_pitch_roll_deg = [-50.0, -0.3, 0.0]
+
+[[camera]]
+index = 1
+role = "forward-right"
+folder = "cam1"
+serial = "013070043618"
+position_in_rig_m = [0.124, 0.122, 0.035]
+yaw_pitch_roll_deg = [0.0, 0.2, 0.0]
+
+[[camera]]
+index = 2
+role = "forward-left"
+folder = "cam2"
+serial = "353073007602"
+position_in_rig_m = [-0.125, 0.122, 0.035]
+yaw_pitch_roll_deg = [0.0, 0.6, 0.0]
+
+[[camera]]
+index = 3
+role = "left side, angled forward"
+folder = "cam3"
+serial = "023071108155"
+position_in_rig_m = [-0.365, 0.090, 0.035]
+yaw_pitch_roll_deg = [50.0, -0.8, 0.0]
