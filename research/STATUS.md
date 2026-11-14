@@ -101,3 +101,10 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 - Decisions taken: a changing base reference position warns (a VRS may move with the rover) and real discontinuities are caught by the Doppler jump check; the 0.25 m jump threshold is calibrated on a walk and must be re-checked on cycling data; invalid TM2 rows only refuse when a photographed pulse needs them.
 - Deferred nits: float photos keep a prior at the receiver's hAcc and gaps don't inflate sigma (revisit with COLMAP in slice 6); the falling-edge check allows 0-1 s rather than about 50 ms; photo files aren't hashed into provenance; the stopped-early threshold is an absolute 10 pulses.
 - Process lesson: scripted edits must assert that each replacement matched (three tests had silently not landed in the slice 5 fixes).
+
+## Field test 2 preparation (2026-11-14)
+
+- Camera serials (from test shots): cam0 / GP6 363073016649, cam1 / GP7 013070043618, cam2 / GP8 353073007602, cam3 / GP9 023071108155. The 100D writes `SerialNumber` (read by the pipeline) but no Canon `FileNumber`, so ordering falls back to filenames.
+- Focus after refocusing: cam0 2.49-2.96 m, cam1 and cam3 2.13-2.49 m, cam2 2.96-3.73 m (all beyond the 2.1 m hyperfocal at 18 mm f/8). cam0 had a screw-on filter, now removed.
+- Bench test in time mode (sessions 20261114T121925Z and 20261114T122323Z, copied to `~/rigcheck/bench/`): cam1's shutter plug was loose in the first run (0 of 58 exposures); after reseating, all four fired on all 16 pulses after warm-up 0, delays 90-103 ms; cam2's on/off test confirmed the GP8 mapping; `match` 16/16 per camera and `ingest` 60 images, serials read correctly, base station 3527.
+- Pico restored to distance mode afterwards (device config identical to the repo).
