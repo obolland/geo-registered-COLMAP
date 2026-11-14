@@ -46,6 +46,12 @@ def session_report(s: Session) -> dict:
         except SessionError as e:
             (errors if photographed else warnings).append(str(e))
             continue
+        if p.n in s.recovered:
+            r = s.recovered[p.n]
+            (warnings if photographed else []).append(
+                f"pulse {p.n} time recovered from the Pico clock between pulses {r.before} and {r.after}"
+                + (", confirmed by the receiver's falling edge" if r.confirmed_by_falling_edge else "")
+            )
         if photographed and not t0 <= t <= t1:
             errors.append(f"pulse {p.n} at GPS {t:.3f} is outside the PVT track")
 

@@ -411,3 +411,52 @@ def test_an_exiftool_error_refuses_and_a_warning_is_reported(tmp_path, monkeypat
     monkeypatch.setattr(photos_module.subprocess, "run", fake("Error: File format error - IMG_0001.JPG\n"))
     with pytest.raises(MatchError, match="cam0.*File format error"):
         read_photos(tmp_path)
+
+
+def test_an_acknowledged_fault_allows_photos_lost_at_the_end(session):
+    photos = _photos_for(session, 0)[:-3]
+    with pytest.raises(MatchError, match="at the start"):
+        match_photos(session, {0: photos})
+    warnings = []
+    matches = match_photos(session, {0: photos}, faulty={0}, warnings=warnings)
+    assert len(matches) == 16 and matches[-1].pulse.n == 16
+    assert any("cam0" in w and "3 exposures" in w and "pulses 17-19" in w for w in warnings)
+
+
+def test_an_acknowledged_fault_doesnt_excuse_a_gap_or_extra_photos(session):
+    photos = _photos_for(session, 0)
+    gapped = photos[:5] + photos[6:]
+    with pytest.raises(MatchError, match="jump"):
+        match_photos(session, {0: gapped}, faulty={0})
+    extra = photos + [Photo("cam0/IMG_0426.JPG", 0, None, photos[-1].taken_s + 0.6, 0.001, 18.0, "0120")]
+    with pytest.raises(MatchError, match="20 photos for 19 pulses"):
+        match_photos(session, {0: extra}, faulty={0})
+
+
+def test_an_acknowledged_fault_allows_a_camera_with_no_photos(session):
+    warnings = []
+    assert match_photos(session, {}, faulty={0}, warnings=warnings) == []
+    assert any("cam0" in w and "no photos" in w for w in warnings)
+
+
+def test_a_fault_camera_that_lost_its_first_photos_is_not_mistaken_for_a_lost_tail(session):
+    steady = _steady(session)
+    photos = _photos_for(steady, 0)[3:]
+    renamed = [
+        Photo(f"cam0/IMG_{407 + k:04d}.JPG", 0, None, p.taken_s, 0.001, 18.0, p.serial)
+        for k, p in enumerate(photos)
+    ]
+    with pytest.raises(MatchError, match="can't tell"):
+        match_photos(steady, {0: renamed}, faulty={0})
+
+
+@pytest.mark.parametrize("kept", [1, 2, 5, 10])
+def test_a_fault_camera_needs_enough_verified_intervals(session, kept):
+    with pytest.raises(MatchError, match="cam0"):
+        match_photos(session, {0: _photos_for(session, 0)[:kept]}, faulty={0})
+
+
+def test_a_fault_on_a_complete_camera_warns(session):
+    warnings = []
+    match_photos(session, {0: _photos_for(session, 0)}, faulty={0}, warnings=warnings)
+    assert any("cam0" in w and "nothing was lost" in w for w in warnings)

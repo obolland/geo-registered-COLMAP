@@ -81,21 +81,21 @@ def test_duplicate_pulse_refuses(session_dir):
 @pytest.mark.parametrize(("column", "value"), [(8, "0"), (9, "0")], ids=["timeBase-utc", "timeValid-0"])
 def test_invalid_tm2_refuses_when_its_time_is_used(session_dir, column, value):
     def edit(rows):
-        rows[4][column] = value
+        rows[20][column] = value
         return rows
 
     edit_csv(session_dir / "tm2.csv", edit)
     s = load_session(session_dir)
-    with pytest.raises(SessionError, match="pulse 3"):
-        s.command_time(3)
-    assert s.command_time(4) > 0
+    with pytest.raises(SessionError, match="pulse 19"):
+        s.command_time(19)
+    assert s.command_time(18) > 0
 
 
 def test_pulse_without_tm2_refuses_when_its_time_is_used(session_dir):
-    edit_csv(session_dir / "tm2.csv", lambda rows: rows[:5] + rows[6:])
+    edit_csv(session_dir / "tm2.csv", lambda rows: rows[:20])
     s = load_session(session_dir)
-    with pytest.raises(SessionError, match="pulse 4"):
-        s.command_time(4)
+    with pytest.raises(SessionError, match="pulse 19"):
+        s.command_time(19)
 
 
 def test_week_rollover_keeps_gps_time_continuous(session_dir):

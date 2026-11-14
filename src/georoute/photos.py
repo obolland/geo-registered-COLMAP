@@ -29,6 +29,8 @@ EXIF_TAGS = [
 NAME_NUMBER = re.compile(r"(\d+)$")
 FILE_NUMBERS_PER_FOLDER = 9999
 MAX_EXPOSURE_S = 30.0
+# A faulty camera's photos must agree with this many pulse intervals before its lost tail is accepted.
+MIN_VERIFIED_INTERVALS = 10
 
 
 class MatchError(ValueError):
@@ -197,12 +199,20 @@ def match_photos(
     photos: dict[int, list[Photo]],
     serials: dict[int, str] | None = None,
     warnings: list[str] | None = None,
+    faulty: set[int] | frozenset[int] = frozenset(),
 ) -> list[Match]:
+    """faulty names cameras the operator says malfunctioned this session: such a camera may have no photos
+    at all, or photos missing only after its last verified one. Every other check still applies."""
     matches, bodies = [], {}
+    warnings = warnings if warnings is not None else []
     for camera in range(CAMERA_COUNT):
         pulses = [p for p in session.pulses if p.delays_us[camera] is not None]
-        if camera not in photos:
-            if pulses:
+        if not photos.get(camera):
+            if pulses and camera in faulty:
+                warnings.append(
+                    f"cam{camera}: no photos for its {len(pulses)} exposures (acknowledged fault)"
+                )
+            elif pulses:
                 raise MatchError(f"cam{camera}: no photo folder, but {len(pulses)} pulses have its sync edge")
             continue
         summary = f"cam{camera}: {len(photos[camera])} photos for {len(pulses)} pulses"
@@ -210,9 +220,18 @@ def match_photos(
             ordered = order_photos(photos[camera])
         except MatchError as e:
             raise MatchError(f"{summary}; {str(e).removeprefix(f'cam{camera}: ')}") from None
-        _check_alignment(session, camera, ordered, pulses, summary)
+        _check_alignment(session, camera, ordered, pulses, summary, allow_lost_tail=camera in faulty)
         _check_body(camera, ordered, (serials or {}).get(camera), bodies)
-        if len(ordered) == 1 and warnings is not None:
+        if camera in faulty and len(ordered) == len(pulses):
+            warnings.append(f"cam{camera}: marked faulty but its photos are complete, so nothing was lost")
+        if len(ordered) < len(pulses):
+            lost = pulses[len(ordered) :]
+            warnings.append(
+                f"cam{camera}: its last {len(lost)} exposures have no photos, pulses "
+                f"{lost[0].n}-{lost[-1].n} (acknowledged fault)"
+            )
+            pulses = pulses[: len(ordered)]
+        if len(ordered) == 1:
             warnings.append(
                 f"cam{camera}: a single photo, so its match can't be checked against pulse intervals"
             )
@@ -240,9 +259,50 @@ def _check_body(camera: int, photos: list[Photo], expected: str | None, bodies: 
             raise MatchError(f"cam{camera} and cam{other} both hold photos from camera serial {serial}")
 
 
-def _check_alignment(session: Session, camera: int, photos: list[Photo], pulses: list[Pulse], summary: str):
+def _check_alignment(
+    session: Session,
+    camera: int,
+    photos: list[Photo],
+    pulses: list[Pulse],
+    summary: str,
+    allow_lost_tail: bool = False,
+):
     """Photo intervals on the camera clock must follow exposure intervals from the logger. Pulses whose
-    time mark isn't valid are bridged, comparing across them to the last valid one."""
+    time mark isn't valid are bridged, comparing across them to the last valid one. With allow_lost_tail,
+    fewer photos than pulses is accepted only if enough intervals agree and no later starting pulse would
+    fit the photos as well, so a loss at the start can't pass as a loss at the end."""
+    mismatch, compared = _first_mismatch(session, camera, photos, pulses)
+    if mismatch is not None:
+        raise MatchError(
+            f"{summary}; photos stop following the pulses at {photos[mismatch].path} "
+            f"(pulse {pulses[mismatch].n}): a photo is missing or extra just before it"
+        )
+    if len(photos) > 1 and compared == 0:
+        raise MatchError(f"{summary}; no two pulses have valid time marks, so the match can't be verified")
+    if len(photos) == len(pulses):
+        return
+    if not photos or not allow_lost_tail or len(photos) > len(pulses):
+        raise MatchError(
+            f"{summary}; intervals agree throughout, so a photo is missing or extra at the start "
+            f"({photos[0].path}) or the end ({photos[-1].path})"
+            if photos
+            else summary
+        )
+    if compared < MIN_VERIFIED_INTERVALS:
+        raise MatchError(
+            f"{summary}; only {compared} intervals verify the photos, need {MIN_VERIFIED_INTERVALS} "
+            "to accept exposures lost at the end"
+        )
+    for offset in range(1, len(pulses) - len(photos) + 1):
+        if _first_mismatch(session, camera, photos, pulses[offset : offset + len(photos)])[0] is None:
+            raise MatchError(
+                f"{summary}; the photos fit the pulses starting at pulse {pulses[offset].n} as well "
+                "as at the first, so it can't tell whether exposures were lost at the start or end"
+            )
+
+
+def _first_mismatch(session: Session, camera: int, photos: list[Photo], pulses: list[Pulse]) -> tuple:
+    """Index of the first photo whose interval disagrees with its pulse (or None), and how many agreed."""
     last, compared = None, 0
     for k in range(min(len(photos), len(pulses))):
         try:
@@ -252,21 +312,10 @@ def _check_alignment(session: Session, camera: int, photos: list[Photo], pulses:
         if last is not None:
             j, t_j = last
             if abs((photos[k].taken_s - photos[j].taken_s) - (t - t_j)) > INTERVAL_TOLERANCE_S:
-                raise MatchError(
-                    f"{summary}; photos stop following the pulses at {photos[k].path} "
-                    f"(pulse {pulses[k].n}): a photo is missing or extra just before it"
-                )
+                return k, compared
             compared += 1
         last = (k, t)
-    if len(photos) > 1 and compared == 0:
-        raise MatchError(f"{summary}; no two pulses have valid time marks, so the match can't be verified")
-    if len(photos) != len(pulses):
-        raise MatchError(
-            f"{summary}; intervals agree throughout, so a photo is missing or extra at the start "
-            f"({photos[0].path}) or the end ({photos[-1].path})"
-            if photos
-            else summary
-        )
+    return None, compared
 
 
 def _exposure(session: Session, pulse: Pulse, camera: int) -> float:

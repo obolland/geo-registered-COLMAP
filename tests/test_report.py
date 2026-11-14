@@ -18,9 +18,9 @@ def test_trimmed_session_has_no_errors_and_flags_logger_counters(session_dir):
 
 
 def test_invalid_time_mark_on_a_photographed_pulse_is_an_error(session_dir):
-    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [5]))
+    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [20]))
     r = session_report(load_session(session_dir))
-    assert any("pulse 4" in e for e in r["errors"])
+    assert any("pulse 19" in e for e in r["errors"])
 
 
 def test_invalid_time_mark_on_an_unphotographed_pulse_is_a_warning(session_dir):
@@ -54,7 +54,7 @@ def test_pulses_outside_the_track_are_errors(session_dir):
 def test_cli_exit_code_follows_errors(session_dir, capsys):
     assert main(["session-report", str(session_dir)]) == 0
     assert "pulses 20" in capsys.readouterr().out
-    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [5]))
+    edit_csv(session_dir / "tm2.csv", set_cells(9, "0", [20]))
     assert main(["session-report", str(session_dir)]) == 1
 
 
