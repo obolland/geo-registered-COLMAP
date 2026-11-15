@@ -144,3 +144,37 @@ def test_match_reports_verified_pairs_per_camera_pair(tmp_path):
     assert report["verified_pairs"] >= 1
     assert report["by_camera_pair"].get("cam0-cam1", 0) >= 1
     assert set(report["images_without_verified_pairs"]) <= {i["path"] for i in images}
+
+
+def _synthetic_workspace(tmp_path, frames=12):
+    options = pycolmap.SyntheticDatasetOptions()
+    options.num_rigs = 1
+    options.num_cameras_per_rig = 1
+    options.num_frames_per_rig = frames
+    options.num_points3D = 400
+    options.prior_position = True
+    options.prior_position_coordinate_system = pycolmap.PosePriorCoordinateSystem.CARTESIAN
+    (tmp_path / "ws").mkdir()
+    with pycolmap.Database.open(tmp_path / "ws" / "database.db") as db:
+        truth = pycolmap.synthesize_dataset(options, db)
+    return truth
+
+
+def test_reconstruct_recovers_a_metric_model_in_the_priors_frame(tmp_path):
+    from georoute.reconstruct import reconstruct
+
+    truth = _synthetic_workspace(tmp_path)
+    summary = reconstruct(tmp_path / "ws", tmp_path)
+    assert summary["models"] == 1 and summary["registered"] == summary["images"] == 12
+    model = pycolmap.Reconstruction(tmp_path / "ws" / "sparse" / "0")
+    for image in truth.images.values():
+        mine = model.find_image_with_name(image.name)
+        np.testing.assert_allclose(mine.projection_center(), image.projection_center(), atol=0.05)
+
+
+def test_reconstruct_refuses_when_too_few_images_register(tmp_path):
+    from georoute.reconstruct import ReconstructionError, reconstruct
+
+    _synthetic_workspace(tmp_path)
+    with pytest.raises(ReconstructionError, match="registered"):
+        reconstruct(tmp_path / "ws", tmp_path, min_registered_fraction=1.01)

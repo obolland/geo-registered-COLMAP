@@ -151,3 +151,42 @@ def match(workspace, max_neighbors: int = 30, max_distance_m: float = 15.0) -> d
     }
     (Path(workspace) / "matching.json").write_text(json.dumps(report, indent=1))
     return report
+
+
+class ReconstructionError(RuntimeError):
+    pass
+
+
+def reconstruct(workspace, images_root, min_registered_fraction: float = 0.95, seed: int = 0) -> dict:
+    """Incremental mapping with the position priors, writing the model to workspace/sparse/0. Refuses if
+    the photos split into several models or too few register; mapping.json records the outcome either way."""
+    workspace = Path(workspace)
+    options = pycolmap.IncrementalPipelineOptions()
+    options.use_prior_position = True
+    options.use_robust_loss_on_prior_position = True
+    options.multiple_models = True
+    options.random_seed = seed
+    sparse = workspace / "sparse"
+    sparse.mkdir(exist_ok=True)
+    models = pycolmap.incremental_mapping(workspace / "database.db", Path(images_root), sparse, options)
+    with pycolmap.Database.open(workspace / "database.db") as db:
+        names = {i.image_id: i.name for i in db.read_all_images()}
+    best = max(models.values(), key=lambda m: m.num_reg_images(), default=None)
+    registered = {best.images[i].name for i in best.reg_image_ids()} if best else set()
+    summary = {
+        "images": len(names),
+        "models": len(models),
+        "model_sizes": sorted((m.num_reg_images() for m in models.values()), reverse=True),
+        "registered": len(registered),
+        "unregistered": sorted(set(names.values()) - registered),
+        "points3D": best.num_points3D() if best else 0,
+        "mean_reprojection_error_px": best.compute_mean_reprojection_error() if best else None,
+    }
+    (workspace / "mapping.json").write_text(json.dumps(summary, indent=1))
+    if summary["models"] != 1:
+        raise ReconstructionError(
+            f"the photos split into {summary['models']} models {summary['model_sizes']}"
+        )
+    if summary["registered"] < min_registered_fraction * summary["images"]:
+        raise ReconstructionError(f"only {summary['registered']} of {summary['images']} images registered")
+    return summary
