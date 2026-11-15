@@ -18,11 +18,21 @@ from georoute.session import CAMERA_COUNT
 
 RIG_SCHEMA = "georoute.rig/1.0.0"
 _KEYS = {
-    "": {"schema", "name", "measured", "reference", "antenna", "timing", "camera"},
+    "": {"schema", "name", "measured", "reference", "antenna", "timing", "camera", "calibration"},
+    "calibration": {"source", "reference", "axial_offset_m"},
     "reference": {"description", "height_above_road_m"},
     "antenna": {"arp_in_rig_m", "phase_centre_offset_m"},
     "timing": {"curtain_travel_ms"},
-    "camera": {"index", "role", "folder", "serial", "position_in_rig_m", "yaw_pitch_roll_deg"},
+    "camera": {
+        "index",
+        "role",
+        "folder",
+        "serial",
+        "position_in_rig_m",
+        "yaw_pitch_roll_deg",
+        "hand_position_in_rig_m",
+        "hand_yaw_pitch_roll_deg",
+    },
 }
 _RIG_FROM_CAMERA_LEVEL = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
 
@@ -104,6 +114,8 @@ def load_rig(path) -> Rig:
         if table not in doc:
             raise RigError(f"{path.name} is missing [{table}]")
         _check_keys(doc[table], table)
+    if "calibration" in doc:
+        _check_keys(doc["calibration"], "calibration")
     if not doc.get("camera"):
         raise RigError(f"{path.name} has no cameras")
     if not isinstance(doc["camera"], list) or not all(isinstance(c, dict) for c in doc["camera"]):
