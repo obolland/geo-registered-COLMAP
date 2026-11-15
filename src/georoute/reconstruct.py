@@ -246,12 +246,14 @@ def refine(
     tolerance_m: float = 1e-3,
     min_lateral_spread_m: float = 1.0,
     max_points: int = MAX_REFINE_POINTS,
+    holdout_every: int = 10,
 ) -> dict:
     """Moves each prior from the nominal-attitude guess to the camera centre implied by the reconstructed
     rotation and the rig geometry, re-adjusting the poses against the new priors until they settle. The
     adjustment runs on the max_points longest-tracked points; the refined poses then go back into the full
     model, whose points are re-adjusted with the poses held fixed. Writes sparse/refined, and updates
-    priors.json and the database priors."""
+    priors.json and the database priors. Every holdout_every-th pulse is left out of the adjustment, so its
+    distance from its RTK-derived position is an honest accuracy measure (0 disables the hold-out)."""
     workspace = Path(workspace)
     full = pycolmap.Reconstruction(workspace / "sparse" / "0")
     model = pycolmap.Reconstruction(workspace / "sparse" / "0")
@@ -261,9 +263,11 @@ def refine(
     names = [n for n in record if n in ids]
     antenna = {n: (record[n]["camera"], np.array(record[n]["antenna_enu"])) for n in names}
     variances = {n: np.diag([record[n]["sigma_h_m"] ** 2] * 2 + [record[n]["sigma_v_m"] ** 2]) for n in names}
+    held_out = {n for n in names if holdout_every and record[n]["pulse"] % holdout_every == 0}
+    used = [n for n in names if n not in held_out]
 
     def align(centres: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        _prior_bundle_adjustment(model, {ids[n]: (centres[n], variances[n]) for n in names})
+        _prior_bundle_adjustment(model, {ids[n]: (centres[n], variances[n]) for n in used})
         return {n: model.images[ids[n]].cam_from_world().rotation.matrix().T for n in names}
 
     result = refine_priors(
@@ -274,14 +278,19 @@ def refine(
         min_lateral_spread_m=min_lateral_spread_m,
         initial={n: np.array(record[n]["centre"]) for n in names},
     )
-    _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in names})
+    _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in used})
     for frame_id in model.reg_frame_ids():
         full.frame(frame_id).rig_from_world = model.frame(frame_id).rig_from_world
     _points_only_adjustment(full)
     (workspace / "sparse" / "refined").mkdir(parents=True, exist_ok=True)
     full.write(workspace / "sparse" / "refined")
     for n in names:
-        record[n].update(centre=result.priors[n].tolist(), covariance=variances[n].tolist(), refined=True)
+        record[n].update(
+            centre=result.priors[n].tolist(),
+            covariance=variances[n].tolist(),
+            refined=True,
+            held_out=n in held_out,
+        )
     (workspace / "priors.json").write_text(json.dumps(record, indent=1))
     with pycolmap.Database.open(workspace / "database.db") as db:
         db.clear_pose_priors()
@@ -291,6 +300,7 @@ def refine(
         "last_change_m": result.last_change_m,
         "images": len(names),
         "points_used": points_used,
+        "held_out": len(held_out),
     }
 
 
@@ -354,7 +364,13 @@ def report(workspace, rig: Rig, reference: int = 2) -> dict:
     workspace = Path(workspace)
     which, poses, centres, record, model = _model_poses(workspace)
     priors = {n: np.array(r["centre"]) for n, r in record.items()}
-    residuals = prior_residuals(priors, centres, {n: r["fixed"] for n, r in record.items()})
+    held_out = {n for n, r in record.items() if r.get("held_out")}
+    residuals = prior_residuals(
+        priors, centres, {n: r["fixed"] and n not in held_out for n, r in record.items()}
+    )
+    holdout = (
+        prior_residuals(priors, centres, {n: record[n]["fixed"] for n in held_out}) if held_out else None
+    )
     rig_result = rig_check(poses, rig, reference)
     cameras = sorted({f"cam{r['camera']}" for r in record.values()})
     order = {n: r["pulse"] for n, r in record.items()}
@@ -373,8 +389,9 @@ def report(workspace, rig: Rig, reference: int = 2) -> dict:
         "mapping": json.loads((workspace / "mapping.json").read_text()),
         "mean_reprojection_error_px": model.compute_mean_reprojection_error(),
         "prior_residuals": residuals,
+        "holdout_residuals": holdout,
         "rig_check": rig_result,
-        "failures": gate(residuals, rig_result, cameras),
+        "failures": gate(holdout or residuals, rig_result, cameras),
     }
     (workspace / "report.json").write_text(json.dumps(out, indent=1))
     return out
