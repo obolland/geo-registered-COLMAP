@@ -66,9 +66,21 @@ def rig_check(poses: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]], rig: 
 GATES = {"prior_p95_m": 0.05, "rig_translation_m": 0.02, "rig_angle_deg": 2.0}
 
 
-def gate(residuals: dict, rig: dict) -> list[str]:
-    """Reasons the reconstruction fails its gates (empty when it passes)."""
-    failures = []
+MIN_RIG_PULSES = 10
+
+
+def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) -> list[str]:
+    """Reasons the reconstruction fails its gates (empty when it passes). A camera with nothing to check
+    fails rather than passing by default."""
+    failures = [f"{c} has no registered images" for c in expected_cameras or [] if c not in residuals]
+    failures += [
+        f"{c} has no RTK-fixed images to check against" for c, r in residuals.items() if not r.get("images")
+    ]
+    failures += [
+        f"{c} shares only {r['pulses']} pulses with {rig.get('reference', 'the reference')}"
+        for c, r in rig["cameras"].items()
+        if r["pulses"] < MIN_RIG_PULSES
+    ]
     for camera, r in residuals.items():
         for axis in ("horizontal", "vertical"):
             value = r.get(f"{axis}_p95_m")

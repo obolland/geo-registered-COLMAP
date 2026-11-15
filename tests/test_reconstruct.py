@@ -244,3 +244,47 @@ def test_priors_replace_the_placeholders_feature_extraction_writes(tmp_path):
         (prior,) = db.read_all_pose_priors()
         np.testing.assert_allclose(prior.position, [1.0, 2.0, 3.0])
         assert prior.coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
+
+
+def test_images_without_a_prior_lose_the_extraction_placeholder(tmp_path):
+    with pycolmap.Database.open(tmp_path / "database.db") as db:
+        camera_id = db.write_camera(pycolmap.Camera.create_from_model_name(1, "OPENCV", 4000.0, 5184, 3456))
+        for name in ("cam0/a.JPG", "cam0/b.JPG"):
+            image_id = db.write_image(pycolmap.Image(name=name, camera_id=camera_id))
+            placeholder = pycolmap.PosePrior()
+            placeholder.corr_data_id = pycolmap.data_t(
+                sensor_id=pycolmap.sensor_t(type=pycolmap.SensorType.CAMERA, id=camera_id), id=image_id
+            )
+            db.write_pose_prior(placeholder)
+        write_priors(db, {"cam0/a.JPG": (np.zeros(3), np.eye(3) * 1e-4)})
+        priors = db.read_all_pose_priors()
+        assert len(priors) == 1
+        assert priors[0].coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
+
+
+def test_prepare_refuses_photos_that_failed_to_extract(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images" / "cam1" / "IMG_0002.JPG").write_bytes(b"not a jpeg")
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    with pytest.raises(ValueError, match="cam1/IMG_0002.JPG"):
+        prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
+
+
+def test_prepare_clears_results_from_an_earlier_run(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    stale = tmp_path / "ws" / "sparse" / "refined"
+    stale.mkdir(parents=True)
+    (tmp_path / "ws" / "report.json").write_text("{}")
+    prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
+    assert not (tmp_path / "ws" / "sparse").exists() and not (tmp_path / "ws" / "report.json").exists()

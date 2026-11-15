@@ -16,7 +16,7 @@ from georoute.rig import Rig
 from georoute.session import Session, load_session
 from georoute.trajectory import antenna_positions, exposure_mid
 
-IMAGES_SCHEMA = "georoute.images/1.1.0"
+IMAGES_SCHEMA = "georoute.images/1.2.0"
 SESSION_FILES = ("session.json", "session.json.tmp", "pulses.csv", "tm2.csv", "pvt.csv", "rtcm.bin")
 MAX_CURTAIN_TRAVEL_S = 0.05
 # A camera whose last photo comes this many capture pulses before the session's last is reported as stopped.
