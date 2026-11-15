@@ -300,3 +300,44 @@ def test_global_mapping_is_aligned_to_the_priors(tmp_path):
     for image in truth.images.values():
         mine = model.find_image_with_name(image.name)
         np.testing.assert_allclose(mine.projection_center(), image.projection_center(), atol=0.05)
+
+
+def test_refine_on_a_sample_of_points_keeps_the_full_model(tmp_path):
+    import json
+
+    from georoute.reconstruct import refine
+    from georoute.rig import Camera, Rig
+
+    truth = _synthetic_workspace(tmp_path)
+    (tmp_path / "ws" / "sparse" / "0").mkdir(parents=True)
+    truth.write(tmp_path / "ws" / "sparse" / "0")
+    rig = Rig(
+        "synthetic",
+        True,
+        (Camera(0, "", "cam0", None, np.array([0.3, 0.1, 0.0]), (0.0, 0.0, 0.0)),),
+        np.array([0.0, 0.0, 0.0]),
+        1.0,
+        0.0,
+        "x",
+    )
+    record = {}
+    for image in truth.images.values():
+        world_from_rig = image.cam_from_world().rotation.matrix().T @ rig.rig_from_camera(0).T
+        antenna = image.projection_center() - world_from_rig @ rig.camera(0).position_in_rig_m
+        record[image.name] = {
+            "camera": 0,
+            "antenna_enu": antenna.tolist(),
+            "sigma_h_m": 0.01,
+            "sigma_v_m": 0.01,
+            "centre": antenna.tolist(),
+            "covariance": (np.eye(3) * 1e-4).tolist(),
+        }
+    (tmp_path / "ws" / "priors.json").write_text(json.dumps(record))
+    summary = refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0, max_points=150)
+    assert summary["points_used"] == 150
+    refined = pycolmap.Reconstruction(tmp_path / "ws" / "sparse" / "refined")
+    assert refined.num_points3D() == truth.num_points3D()
+    for image in truth.images.values():
+        np.testing.assert_allclose(
+            refined.find_image_with_name(image.name).projection_center(), image.projection_center(), atol=0.01
+        )

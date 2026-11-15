@@ -235,12 +235,27 @@ def reconstruct(
     return summary
 
 
-def refine(workspace, rig: Rig, tolerance_m: float = 1e-3, min_lateral_spread_m: float = 1.0) -> dict:
+# Refining poses doesn't need every 3D point: the best-observed ones pin them down, and a full adjustment of
+# millions of points took about an hour per round on the field test 2 loop.
+MAX_REFINE_POINTS = 200_000
+
+
+def refine(
+    workspace,
+    rig: Rig,
+    tolerance_m: float = 1e-3,
+    min_lateral_spread_m: float = 1.0,
+    max_points: int = MAX_REFINE_POINTS,
+) -> dict:
     """Moves each prior from the nominal-attitude guess to the camera centre implied by the reconstructed
-    rotation and the rig geometry, re-adjusting the model against the new priors until they settle.
-    Writes sparse/refined, and updates priors.json and the database priors."""
+    rotation and the rig geometry, re-adjusting the poses against the new priors until they settle. The
+    adjustment runs on the max_points longest-tracked points; the refined poses then go back into the full
+    model, whose points are re-adjusted with the poses held fixed. Writes sparse/refined, and updates
+    priors.json and the database priors."""
     workspace = Path(workspace)
+    full = pycolmap.Reconstruction(workspace / "sparse" / "0")
     model = pycolmap.Reconstruction(workspace / "sparse" / "0")
+    points_used = _keep_longest_tracks(model, max_points)
     record = json.loads((workspace / "priors.json").read_text())
     ids = {model.images[i].name: i for i in model.reg_image_ids()}
     names = [n for n in record if n in ids]
@@ -260,15 +275,48 @@ def refine(workspace, rig: Rig, tolerance_m: float = 1e-3, min_lateral_spread_m:
         initial={n: np.array(record[n]["centre"]) for n in names},
     )
     _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in names})
+    for frame_id in model.reg_frame_ids():
+        full.frame(frame_id).rig_from_world = model.frame(frame_id).rig_from_world
+    _points_only_adjustment(full)
     (workspace / "sparse" / "refined").mkdir(parents=True, exist_ok=True)
-    model.write(workspace / "sparse" / "refined")
+    full.write(workspace / "sparse" / "refined")
     for n in names:
         record[n].update(centre=result.priors[n].tolist(), covariance=variances[n].tolist(), refined=True)
     (workspace / "priors.json").write_text(json.dumps(record, indent=1))
     with pycolmap.Database.open(workspace / "database.db") as db:
         db.clear_pose_priors()
         write_priors(db, {n: (result.priors[n], variances[n]) for n in names})
-    return {"iterations": result.iterations, "last_change_m": result.last_change_m, "images": len(names)}
+    return {
+        "iterations": result.iterations,
+        "last_change_m": result.last_change_m,
+        "images": len(names),
+        "points_used": points_used,
+    }
+
+
+def _keep_longest_tracks(model: pycolmap.Reconstruction, max_points: int) -> int:
+    ids = list(model.point3D_ids())
+    if len(ids) <= max_points:
+        return len(ids)
+    ids.sort(key=lambda i: model.points3D[i].track.length(), reverse=True)
+    for point_id in ids[max_points:]:
+        model.delete_point3D(point_id)
+    return max_points
+
+
+def _points_only_adjustment(model: pycolmap.Reconstruction):
+    config = pycolmap.BundleAdjustmentConfig()
+    for image_id in model.reg_image_ids():
+        config.add_image(image_id)
+    for frame_id in model.reg_frame_ids():
+        config.set_constant_rig_from_world_pose(frame_id)
+    for camera_id in model.cameras:
+        config.set_constant_cam_intrinsics(camera_id)
+    summary = pycolmap.create_default_bundle_adjuster(
+        pycolmap.BundleAdjustmentOptions(), config, model
+    ).solve()
+    if not summary.is_solution_usable():
+        raise ReconstructionError(f"point re-adjustment failed: {summary.brief_report()}")
 
 
 def _prior_bundle_adjustment(
