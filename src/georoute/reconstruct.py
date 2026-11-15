@@ -190,23 +190,33 @@ class ReconstructionError(RuntimeError):
     pass
 
 
-def reconstruct(workspace, images_root, min_registered_fraction: float = 0.95, seed: int = 0) -> dict:
-    """Incremental mapping with the position priors, writing the model to workspace/sparse/0. Refuses if
-    the photos split into several models or too few register; mapping.json records the outcome either way."""
+def reconstruct(
+    workspace, images_root, min_registered_fraction: float = 0.95, seed: int = 0, mapper: str = "incremental"
+) -> dict:
+    """Maps the workspace and writes the model to workspace/sparse/0, in the priors' frame. "incremental"
+    uses the priors while mapping; "global" (much faster on long sequences, but it can't take priors) maps
+    freely and is then fitted to the priors by a similarity transform, for refine to tighten. Refuses if the
+    photos split into several models or too few register; mapping.json records the outcome either way."""
     workspace = Path(workspace)
-    options = pycolmap.IncrementalPipelineOptions()
-    options.use_prior_position = True
-    options.use_robust_loss_on_prior_position = True
-    options.multiple_models = True
-    options.random_seed = seed
     sparse = workspace / "sparse"
     sparse.mkdir(exist_ok=True)
-    models = pycolmap.incremental_mapping(workspace / "database.db", Path(images_root), sparse, options)
+    if mapper == "incremental":
+        options = pycolmap.IncrementalPipelineOptions()
+        options.use_prior_position = True
+        options.use_robust_loss_on_prior_position = True
+        options.multiple_models = True
+        options.random_seed = seed
+        models = pycolmap.incremental_mapping(workspace / "database.db", Path(images_root), sparse, options)
+    elif mapper == "global":
+        models = _global_mapping(workspace, Path(images_root), seed)
+    else:
+        raise ValueError(f"unknown mapper {mapper!r}")
     with pycolmap.Database.open(workspace / "database.db") as db:
         names = {i.image_id: i.name for i in db.read_all_images()}
     best = max(models.values(), key=lambda m: m.num_reg_images(), default=None)
     registered = {best.images[i].name for i in best.reg_image_ids()} if best else set()
     summary = {
+        "mapper": mapper,
         "images": len(names),
         "models": len(models),
         "model_sizes": sorted((m.num_reg_images() for m in models.values()), reverse=True),
@@ -350,3 +360,38 @@ def calibrate_rig(workspace, rig_path, out_path, reference: int = 2) -> dict:
     offset = rig_check(poses, with_orientations(rig, calibration), reference)["axial_offset_m"]
     write_calibrated_rig(rig_path, out_path, calibration, reference, offset, source=str(workspace))
     return {"cameras": calibration, "axial_offset_m": offset}
+
+
+# A global model is fitted to the priors by RANSAC; an image this far from its prior is an outlier.
+ALIGNMENT_MAX_ERROR_M = 0.5
+
+
+def _global_mapping(workspace: Path, images_root: Path, seed: int) -> dict[int, pycolmap.Reconstruction]:
+    options = pycolmap.GlobalPipelineOptions()
+    options.random_seed = seed
+    options.mapper.random_seed = seed
+    options.mapper.global_positioning.use_gpu = False
+    if hasattr(options.mapper.bundle_adjustment.ceres, "use_gpu"):
+        options.mapper.bundle_adjustment.ceres.use_gpu = False
+    sparse = workspace / "sparse"
+    models = pycolmap.global_mapping(workspace / "database.db", images_root, sparse, options)
+    with pycolmap.Database.open(workspace / "database.db") as db:
+        names = {i.image_id: i.name for i in db.read_all_images()}
+        priors = {
+            names[p.corr_data_id.id]: np.asarray(p.position)
+            for p in db.read_all_pose_priors()
+            if p.coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
+        }
+    ransac = pycolmap.RANSACOptions()
+    ransac.max_error = ALIGNMENT_MAX_ERROR_M
+    for index, model in models.items():
+        common = [model.images[i].name for i in model.reg_image_ids() if model.images[i].name in priors]
+        sim3 = pycolmap.align_reconstruction_to_locations(
+            model, common, np.array([priors[n] for n in common]), min_common_images=3, ransac_options=ransac
+        )
+        if sim3 is None:
+            raise ReconstructionError(f"global model {index} couldn't be fitted to the priors")
+        model.transform(sim3)
+        (sparse / str(index)).mkdir(parents=True, exist_ok=True)
+        model.write(sparse / str(index))
+    return models

@@ -288,3 +288,15 @@ def test_prepare_clears_results_from_an_earlier_run(tmp_path):
     (tmp_path / "ws" / "report.json").write_text("{}")
     prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
     assert not (tmp_path / "ws" / "sparse").exists() and not (tmp_path / "ws" / "report.json").exists()
+
+
+def test_global_mapping_is_aligned_to_the_priors(tmp_path):
+    from georoute.reconstruct import reconstruct
+
+    truth = _synthetic_workspace(tmp_path, frames=15)
+    summary = reconstruct(tmp_path / "ws", tmp_path, mapper="global")
+    assert summary["mapper"] == "global" and summary["registered"] == 15
+    model = pycolmap.Reconstruction(tmp_path / "ws" / "sparse" / "0")
+    for image in truth.images.values():
+        mine = model.find_image_with_name(image.name)
+        np.testing.assert_allclose(mine.projection_center(), image.projection_center(), atol=0.05)

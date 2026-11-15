@@ -30,3 +30,10 @@ def test_pulse_ranges_are_strict():
     for bad in ("10", "20-10", "a-b", "-5"):
         with pytest.raises(ValueError):
             _pulse_range(bad)
+
+
+def test_colmap_map_parses():
+    from georoute.cli import build_parser
+
+    args = build_parser().parse_args(["colmap-map", "ws", "img", "--rig", "r.toml", "--mapper", "global"])
+    assert args.command == "colmap-map" and args.mapper == "global"

@@ -71,7 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--rig", type=Path, required=True)
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--pulses", help="only pulses FIRST-LAST")
+    run.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     run.epilog = "exit status: 0 report passes its gates, 1 refused or gates failed (see report.json)"
+    remap = sub.add_parser(
+        "colmap-map", help="map, refine and report an already prepared and matched workspace"
+    )
+    remap.add_argument("workspace", type=Path)
+    remap.add_argument("images_root", type=Path)
+    remap.add_argument("--rig", type=Path, required=True)
+    remap.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     rep = sub.add_parser("colmap-report", help="re-check a workspace's reconstruction against priors and rig")
     rep.add_argument("workspace", type=Path)
     rep.add_argument("--rig", type=Path, required=True)
@@ -97,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         return _colmap_prepare(args)
     if args.command == "colmap-run":
         return _colmap_run(args)
+    if args.command == "colmap-map":
+        return _colmap_map(args)
     if args.command == "colmap-report":
         return _colmap_report(args)
     if args.command == "rig-calibrate":
@@ -223,7 +233,7 @@ def _colmap_prepare(args) -> int:
 
 
 def _colmap_run(args) -> int:
-    from georoute.reconstruct import ReconstructionError, match, prepare, reconstruct, refine, report
+    from georoute.reconstruct import ReconstructionError, match, prepare
 
     try:
         pulses = _pulse_range(args.pulses)
@@ -235,16 +245,42 @@ def _colmap_run(args) -> int:
             f"{len(matched['images_without_verified_pairs'])} photos unmatched",
             flush=True,
         )
-        mapped = reconstruct(args.out, args.images_root)
-        print(f"map: {mapped['registered']} of {mapped['images']} registered", flush=True)
-        print("refine:", refine(args.out, rig), flush=True)
-        result = report(args.out, rig)
+    except (RigError, ValueError, OSError, KeyError, ReconstructionError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    return _map_refine_report(args.out, args.images_root, rig, args.mapper)
+
+
+def _colmap_map(args) -> int:
+    try:
+        rig = load_rig(args.rig)
+    except RigError as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    return _map_refine_report(args.workspace, args.images_root, rig, args.mapper)
+
+
+def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> int:
+    import time
+
+    from georoute.reconstruct import ReconstructionError, reconstruct, refine, report
+
+    try:
+        started = time.monotonic()
+        mapped = reconstruct(workspace, images_root, mapper=mapper)
+        print(
+            f"map ({mapper}): {mapped['registered']} of {mapped['images']} registered in "
+            f"{(time.monotonic() - started) / 60:.1f} min",
+            flush=True,
+        )
+        print("refine:", refine(workspace, rig), flush=True)
+        result = report(workspace, rig)
     except (RigError, ValueError, OSError, KeyError, ReconstructionError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     for failure in result["failures"]:
         print(f"GATE {failure}", file=sys.stderr)
-    print(f"report: {args.out / 'report.json'}")
+    print(f"report: {workspace / 'report.json'}")
     return 1 if result["failures"] else 0
 
 
