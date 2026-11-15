@@ -285,17 +285,7 @@ def report(workspace, rig: Rig, reference: int = 2) -> dict:
     """report.json for the refined model (or the first one if not refined): mapping outcome, per-camera
     prior residuals on RTK-fixed images, the rig check and the gate failures."""
     workspace = Path(workspace)
-    which = "refined" if (workspace / "sparse" / "refined").is_dir() else "0"
-    model = pycolmap.Reconstruction(workspace / "sparse" / which)
-    record = json.loads((workspace / "priors.json").read_text())
-    poses, centres = {}, {}
-    for image_id in model.reg_image_ids():
-        image = model.images[image_id]
-        centre = image.projection_center()
-        centres[image.name] = centre
-        if image.name in record:
-            r = record[image.name]
-            poses[(r["pulse"], r["camera"])] = (image.cam_from_world().rotation.matrix().T, centre)
+    which, poses, centres, record, model = _model_poses(workspace)
     priors = {n: np.array(r["centre"]) for n, r in record.items()}
     residuals = prior_residuals(priors, centres, {n: r["fixed"] for n, r in record.items()})
     rig_result = rig_check(poses, rig, reference)
@@ -309,3 +299,33 @@ def report(workspace, rig: Rig, reference: int = 2) -> dict:
     }
     (workspace / "report.json").write_text(json.dumps(out, indent=1))
     return out
+
+
+def _model_poses(workspace: Path):
+    """The refined model if there is one, else the first: its name, (pulse, camera) world poses, camera
+    centres by image name, the priors record and the model itself."""
+    which = "refined" if (workspace / "sparse" / "refined").is_dir() else "0"
+    model = pycolmap.Reconstruction(workspace / "sparse" / which)
+    record = json.loads((workspace / "priors.json").read_text())
+    poses, centres = {}, {}
+    for image_id in model.reg_image_ids():
+        image = model.images[image_id]
+        centre = image.projection_center()
+        centres[image.name] = centre
+        if image.name in record:
+            r = record[image.name]
+            poses[(r["pulse"], r["camera"])] = (image.cam_from_world().rotation.matrix().T, centre)
+    return which, poses, centres, record, model
+
+
+def calibrate_rig(workspace, rig_path, out_path, reference: int = 2) -> dict:
+    """Calibrated rig config from the workspace's reconstruction (see calibrate.py)."""
+    from georoute.calibrate import calibrate_rotations, write_calibrated_rig
+    from georoute.rig import load_rig
+
+    rig = load_rig(rig_path)
+    _, poses, _, _, _ = _model_poses(Path(workspace))
+    calibration = calibrate_rotations(poses, rig, reference)
+    offset = rig_check(poses, rig, reference)["axial_offset_m"]
+    write_calibrated_rig(rig_path, out_path, calibration, reference, offset, source=str(workspace))
+    return {"cameras": calibration, "axial_offset_m": offset}
