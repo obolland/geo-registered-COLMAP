@@ -123,3 +123,24 @@ def test_prepare_extracts_features_per_camera_folder_and_writes_priors(tmp_path)
         assert all(c.model == pycolmap.CameraModelId.OPENCV for c in db.read_all_cameras())
         assert db.num_keypoints() > 0
     assert json.loads((tmp_path / "ws" / "priors.json").read_text())["cam0/IMG_0000.JPG"]["centre"]
+
+
+def test_match_reports_verified_pairs_per_camera_pair(tmp_path):
+    import json
+
+    from georoute.reconstruct import match, prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    for k in range(4):  # cam1 sees exactly what cam0 sees, so those pairs verify
+        (tmp_path / "images" / f"cam1/IMG_{k:04d}.JPG").write_bytes(
+            (tmp_path / "images" / f"cam0/IMG_{k:04d}.JPG").read_bytes()
+        )
+    for image in images:
+        image["has_prior"] = True
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
+    report = match(tmp_path / "ws", max_neighbors=10, max_distance_m=50)
+    assert report["verified_pairs"] >= 1
+    assert report["by_camera_pair"].get("cam0-cam1", 0) >= 1
+    assert set(report["images_without_verified_pairs"]) <= {i["path"] for i in images}

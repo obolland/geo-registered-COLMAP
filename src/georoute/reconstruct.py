@@ -116,3 +116,38 @@ def prepare(
         )
     )
     return summary
+
+
+def match(workspace, max_neighbors: int = 30, max_distance_m: float = 15.0) -> dict:
+    """Matches each image against its nearest neighbours by prior position (across all cameras), then
+    reports verified pairs per camera pair and the images left without any."""
+    db_path = Path(workspace) / "database.db"
+    pairing = pycolmap.SpatialPairingOptions()
+    pairing.max_num_neighbors = max_neighbors
+    pairing.max_distance = max_distance_m
+    pairing.ignore_z = False
+    matching = pycolmap.FeatureMatchingOptions()
+    matching.use_gpu = False
+    pycolmap.match_spatial(
+        db_path, matching_options=matching, pairing_options=pairing, device=pycolmap.Device.cpu
+    )
+
+    with pycolmap.Database.open(db_path) as db:
+        images = {i.image_id: i.name for i in db.read_all_images()}
+        pair_ids, geometries = db.read_two_view_geometries()
+    by_pair: dict[str, int] = {}
+    connected = set()
+    for pair_id, geometry in zip(pair_ids, geometries, strict=True):
+        if len(geometry.inlier_matches) == 0:
+            continue
+        a, b = (images[i] for i in pycolmap.pair_id_to_image_pair(pair_id))
+        key = "-".join(sorted([a.split("/")[0], b.split("/")[0]]))
+        by_pair[key] = by_pair.get(key, 0) + 1
+        connected |= {a, b}
+    report = {
+        "verified_pairs": sum(by_pair.values()),
+        "by_camera_pair": dict(sorted(by_pair.items())),
+        "images_without_verified_pairs": sorted(set(images.values()) - connected),
+    }
+    (Path(workspace) / "matching.json").write_text(json.dumps(report, indent=1))
+    return report
