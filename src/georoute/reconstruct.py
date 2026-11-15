@@ -95,7 +95,8 @@ def prepare(
     workspace = Path(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
     db_path = workspace / "database.db"
-    db_path.unlink(missing_ok=True)
+    for stale in ("", "-shm", "-wal"):
+        Path(f"{db_path}{stale}").unlink(missing_ok=True)
 
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "OPENCV"
