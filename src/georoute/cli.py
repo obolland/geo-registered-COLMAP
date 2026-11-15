@@ -65,6 +65,17 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("--rig", type=Path, required=True)
     prep.add_argument("--out", type=Path, required=True, help="workspace folder")
     prep.add_argument("--pulses", help="only pulses FIRST-LAST, for a quick subset")
+    run = sub.add_parser("colmap-run", help="prepare, match, map, refine priors and report in one go")
+    run.add_argument("images_json", type=Path)
+    run.add_argument("images_root", type=Path)
+    run.add_argument("--rig", type=Path, required=True)
+    run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--pulses", help="only pulses FIRST-LAST")
+    run.epilog = "exit status: 0 report passes its gates, 1 refused or gates failed (see report.json)"
+    cal = sub.add_parser("rig-calibrate", help="calibrated rig config from a workspace's reconstruction")
+    cal.add_argument("workspace", type=Path)
+    cal.add_argument("--rig", type=Path, required=True)
+    cal.add_argument("--out", type=Path, required=True)
     rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
     rig.add_argument("rig_toml", type=Path)
     return parser
@@ -81,6 +92,10 @@ def main(argv: list[str] | None = None) -> int:
         return _ingest(args)
     if args.command == "colmap-prepare":
         return _colmap_prepare(args)
+    if args.command == "colmap-run":
+        return _colmap_run(args)
+    if args.command == "rig-calibrate":
+        return _rig_calibrate(args)
     if args.command == "rig-check":
         return _rig_check(args)
     parser.print_help()
@@ -198,5 +213,52 @@ def _colmap_prepare(args) -> int:
     print(
         f"{summary['images']} images, {summary['cameras']} cameras, {summary['priors']} priors "
         f"(frame {summary['frame_id']}); workspace {args.out}"
+    )
+    return 0
+
+
+def _colmap_run(args) -> int:
+    from georoute.reconstruct import ReconstructionError, match, prepare, reconstruct, refine, report
+
+    pulses = tuple(int(x) for x in args.pulses.split("-")) if args.pulses else None
+    try:
+        rig = load_rig(args.rig)
+        print("prepare:", prepare(args.images_json, args.images_root, args.out, rig, pulses), flush=True)
+        matched = match(args.out)
+        print(
+            f"match: {matched['verified_pairs']} verified pairs, "
+            f"{len(matched['images_without_verified_pairs'])} photos unmatched",
+            flush=True,
+        )
+        mapped = reconstruct(args.out, args.images_root)
+        print(f"map: {mapped['registered']} of {mapped['images']} registered", flush=True)
+        print("refine:", refine(args.out, rig), flush=True)
+        result = report(args.out, rig)
+    except (RigError, ValueError, OSError, ReconstructionError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    for failure in result["failures"]:
+        print(f"GATE {failure}", file=sys.stderr)
+    print(f"report: {args.out / 'report.json'}")
+    return 1 if result["failures"] else 0
+
+
+def _rig_calibrate(args) -> int:
+    from georoute.calibrate import CalibrationError
+    from georoute.reconstruct import calibrate_rig
+
+    try:
+        result = calibrate_rig(args.workspace, args.rig, args.out)
+    except (RigError, CalibrationError, OSError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    for camera, c in result["cameras"].items():
+        print(
+            f"{camera}: yaw/pitch/roll {[round(x, 2) for x in c['yaw_pitch_roll_deg']]}, "
+            f"spread {c['spread_deg']:.3f} deg over {c['pulses']} pulses"
+        )
+    print(
+        f"optical centre {result['axial_offset_m'] * 1000:.0f} mm behind the lens front; "
+        f"written to {args.out}"
     )
     return 0
