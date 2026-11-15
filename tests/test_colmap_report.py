@@ -56,3 +56,22 @@ def test_prior_residuals_per_camera_on_fixed_images():
     assert r["cam0"]["horizontal_p50_m"] == pytest.approx(0.025)
     assert r["cam0"]["vertical_p95_m"] == pytest.approx(0.019)
     assert r["cam0"]["images"] == 2 and r["cam1"]["images"] == 0
+
+
+def test_gate_names_every_failure():
+    from georoute.colmap_report import gate
+
+    residuals = {
+        "cam0": {"horizontal_p95_m": 0.08, "vertical_p95_m": 0.01},
+        "cam1": {"horizontal_p95_m": 0.01, "vertical_p95_m": None},
+    }
+    rig = {
+        "cameras": {
+            "cam3": {"translation_residual_m": 0.05, "angle_error_deg": 0.5},
+            "cam1": {"translation_residual_m": 0.001, "angle_error_deg": 4.0},
+        }
+    }
+    failures = gate(residuals, rig)
+    assert len(failures) == 3
+    assert any("cam0 horizontal" in f for f in failures) and any("cam3 sits 5.0 cm" in f for f in failures)
+    assert gate({"cam0": {"horizontal_p95_m": 0.01, "vertical_p95_m": 0.01}}, {"cameras": {}}) == []

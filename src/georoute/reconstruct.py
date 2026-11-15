@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pycolmap
 
+from georoute.colmap_report import gate, prior_residuals, rig_check
 from georoute.rig import Rig, refine_priors
 
 # First-pass priors assume a level rig, so allow for the bike's lean and pitch moving the lever arm.
@@ -129,6 +130,8 @@ def prepare(
     record = {
         name: {
             "camera": by_path[name]["camera"],
+            "pulse": by_path[name]["pulse"],
+            "fixed": by_path[name]["carr_soln"] == 2 and "jump" not in by_path[name]["flags"],
             "antenna_enu": by_path[name]["antenna_enu"],
             "sigma_h_m": by_path[name]["prior_sigma_h_m"],
             "sigma_v_m": by_path[name]["prior_sigma_v_m"],
@@ -276,3 +279,33 @@ def _prior_bundle_adjustment(
         model,
     )
     adjuster.solve()
+
+
+def report(workspace, rig: Rig, reference: int = 2) -> dict:
+    """report.json for the refined model (or the first one if not refined): mapping outcome, per-camera
+    prior residuals on RTK-fixed images, the rig check and the gate failures."""
+    workspace = Path(workspace)
+    which = "refined" if (workspace / "sparse" / "refined").is_dir() else "0"
+    model = pycolmap.Reconstruction(workspace / "sparse" / which)
+    record = json.loads((workspace / "priors.json").read_text())
+    poses, centres = {}, {}
+    for image_id in model.reg_image_ids():
+        image = model.images[image_id]
+        centre = image.projection_center()
+        centres[image.name] = centre
+        if image.name in record:
+            r = record[image.name]
+            poses[(r["pulse"], r["camera"])] = (image.cam_from_world().rotation.matrix().T, centre)
+    priors = {n: np.array(r["centre"]) for n, r in record.items()}
+    residuals = prior_residuals(priors, centres, {n: r["fixed"] for n, r in record.items()})
+    rig_result = rig_check(poses, rig, reference)
+    out = {
+        "model": which,
+        "mapping": json.loads((workspace / "mapping.json").read_text()),
+        "mean_reprojection_error_px": model.compute_mean_reprojection_error(),
+        "prior_residuals": residuals,
+        "rig": rig_result,
+        "failures": gate(residuals, rig_result),
+    }
+    (workspace / "report.json").write_text(json.dumps(out, indent=1))
+    return out

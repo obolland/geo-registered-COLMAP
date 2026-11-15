@@ -103,6 +103,8 @@ def _textured_photos(root, rig, n=4):
                     "prior_sigma_h_m": 0.014,
                     "prior_sigma_v_m": 0.011,
                     "velocity_enu": [1.3, 0.0, 0.0],
+                    "carr_soln": 2,
+                    "flags": [],
                 }
             )
     return images

@@ -61,3 +61,25 @@ def rig_check(poses: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]], rig: 
             "angle_error_deg": float(np.median(angles)),
         }
     return {"reference": f"cam{reference}", "axial_offset_m": offset, "cameras": cameras}
+
+
+GATES = {"prior_p95_m": 0.05, "rig_translation_m": 0.02, "rig_angle_deg": 2.0}
+
+
+def gate(residuals: dict, rig: dict) -> list[str]:
+    """Reasons the reconstruction fails its gates (empty when it passes)."""
+    failures = []
+    for camera, r in residuals.items():
+        for axis in ("horizontal", "vertical"):
+            value = r.get(f"{axis}_p95_m")
+            if value is not None and value > GATES["prior_p95_m"]:
+                failures.append(
+                    f"{camera} {axis} prior residual p95 {value * 100:.1f} cm exceeds "
+                    f"{GATES['prior_p95_m'] * 100:.0f} cm"
+                )
+    for camera, r in rig["cameras"].items():
+        if r["translation_residual_m"] > GATES["rig_translation_m"]:
+            failures.append(f"{camera} sits {r['translation_residual_m'] * 100:.1f} cm from its rig position")
+        if r["angle_error_deg"] > GATES["rig_angle_deg"]:
+            failures.append(f"{camera} points {r['angle_error_deg']:.1f} degrees from its rig orientation")
+    return failures
