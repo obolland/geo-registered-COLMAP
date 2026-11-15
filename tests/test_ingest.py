@@ -39,6 +39,7 @@ def test_ingest_writes_one_record_per_capture_photo(session_dir, tmp_path):
     assert data["frame"]["datum"] == "ETRS89" and data["frame"]["lat_deg"] == pytest.approx(51.15884)
     assert np.linalg.norm(first["antenna_enu"]) < 30
     assert first["flags"] == [] and first["carr_soln"] == 2
+    assert 0.3 < np.linalg.norm(first["velocity_enu"][:2]) < 3
     assert (tmp_path / "out" / "track.png").stat().st_size > 1000
     assert json.loads((tmp_path / "out" / "report.json").read_text())["session"]["errors"] == []
 

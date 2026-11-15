@@ -172,6 +172,7 @@ def _position_captures(
                 "t_mid_gps_s": float(t_mid[k]),
                 "antenna_ecef": antenna.ecef[k].tolist(),
                 "antenna_enu": enu[k].tolist(),
+                "velocity_enu": (antenna.velocity_ecef[k] @ frame.ecef_from_enu).round(4).tolist(),
                 "carr_soln": int(antenna.carr_soln[k]),
                 "fix_type": int(antenna.fix_type[k]),
                 "h_acc_m": round(float(antenna.h_acc_m[k]), 4),

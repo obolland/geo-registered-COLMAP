@@ -144,3 +144,10 @@ def test_photos_bracketed_by_a_position_jump_are_flagged():
     track = PvtTrack(**{**track.__dict__, "lat_deg": lat})
     q = antenna_positions(track, [T0 + 3.9, T0 + 3.7, T0 + 4.1], nav_period_s=PERIOD)
     assert q.flags == [["jump"], [], []]
+
+
+def test_velocity_is_interpolated_in_ecef():
+    a, v0 = np.array([0.4, 0.0, 0.0]), np.array([2.0, 1.0, 0.0])
+    track = _track(lambda t: v0 * t + 0.5 * a * t * t, lambda t: v0 + a * t)
+    q = antenna_positions(track, [T0 + 1.1])
+    np.testing.assert_allclose(q.velocity_ecef[0] @ FRAME.ecef_from_enu, v0 + a * 1.1, atol=1e-3)
