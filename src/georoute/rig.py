@@ -210,6 +210,7 @@ def refine_priors(
     tolerance_m: float = 1e-3,
     max_iterations: int = 5,
     min_lateral_spread_m: float = 1.0,
+    initial: dict[str, np.ndarray] | None = None,
 ) -> RefinedPriors:
     """Camera-centre priors per image, each from that image's own antenna position and aligned rotation.
     Starts from the antenna positions (off by at most the lever arm), then predicts each camera centre from
@@ -226,7 +227,7 @@ def refine_priors(
             f"the antenna track is too straight to align a rig to (lateral spread {lateral:.2f} m, "
             f"need {min_lateral_spread_m} m)"
         )
-    priors = {name: np.asarray(a, float) for name, (_, a) in antenna.items()}
+    priors = {name: np.asarray(initial[name] if initial else a, float) for name, (_, a) in antenna.items()}
     for iteration in range(1, max_iterations + 1):
         world_from_camera = align(priors)
         updated = {

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pycolmap
 
-from georoute.rig import Rig
+from georoute.rig import Rig, refine_priors
 
 # First-pass priors assume a level rig, so allow for the bike's lean and pitch moving the lever arm.
 LEVER_ALLOWANCE_M = 0.03
@@ -109,12 +109,19 @@ def prepare(
             "priors": written,
             "frame_id": data["frame"]["id"],
         }
-    (workspace / "priors.json").write_text(
-        json.dumps(
-            {name: {"centre": c.tolist(), "covariance": cov.tolist()} for name, (c, cov) in priors.items()},
-            indent=1,
-        )
-    )
+    by_path = {i["path"]: i for i in images}
+    record = {
+        name: {
+            "camera": by_path[name]["camera"],
+            "antenna_enu": by_path[name]["antenna_enu"],
+            "sigma_h_m": by_path[name]["prior_sigma_h_m"],
+            "sigma_v_m": by_path[name]["prior_sigma_v_m"],
+            "centre": c.tolist(),
+            "covariance": cov.tolist(),
+        }
+        for name, (c, cov) in priors.items()
+    }
+    (workspace / "priors.json").write_text(json.dumps(record, indent=1))
     return summary
 
 
@@ -190,3 +197,66 @@ def reconstruct(workspace, images_root, min_registered_fraction: float = 0.95, s
     if summary["registered"] < min_registered_fraction * summary["images"]:
         raise ReconstructionError(f"only {summary['registered']} of {summary['images']} images registered")
     return summary
+
+
+def refine(workspace, rig: Rig, tolerance_m: float = 1e-3, min_lateral_spread_m: float = 1.0) -> dict:
+    """Moves each prior from the nominal-attitude guess to the camera centre implied by the reconstructed
+    rotation and the rig geometry, re-adjusting the model against the new priors until they settle.
+    Writes sparse/refined, and updates priors.json and the database priors."""
+    workspace = Path(workspace)
+    model = pycolmap.Reconstruction(workspace / "sparse" / "0")
+    record = json.loads((workspace / "priors.json").read_text())
+    ids = {model.images[i].name: i for i in model.reg_image_ids()}
+    names = [n for n in record if n in ids]
+    antenna = {n: (record[n]["camera"], np.array(record[n]["antenna_enu"])) for n in names}
+    variances = {n: np.diag([record[n]["sigma_h_m"] ** 2] * 2 + [record[n]["sigma_v_m"] ** 2]) for n in names}
+
+    def align(centres: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        _prior_bundle_adjustment(model, {ids[n]: (centres[n], variances[n]) for n in names})
+        return {n: model.images[ids[n]].cam_from_world().rotation.matrix().T for n in names}
+
+    result = refine_priors(
+        rig,
+        antenna,
+        align,
+        tolerance_m=tolerance_m,
+        min_lateral_spread_m=min_lateral_spread_m,
+        initial={n: np.array(record[n]["centre"]) for n in names},
+    )
+    _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in names})
+    (workspace / "sparse" / "refined").mkdir(parents=True, exist_ok=True)
+    model.write(workspace / "sparse" / "refined")
+    for n in names:
+        record[n].update(centre=result.priors[n].tolist(), covariance=variances[n].tolist(), refined=True)
+    (workspace / "priors.json").write_text(json.dumps(record, indent=1))
+    with pycolmap.Database.open(workspace / "database.db") as db:
+        db.clear_pose_priors()
+        write_priors(db, {n: (result.priors[n], variances[n]) for n in names})
+    return {"iterations": result.iterations, "last_change_m": result.last_change_m, "images": len(names)}
+
+
+def _prior_bundle_adjustment(
+    model: pycolmap.Reconstruction, priors: dict[int, tuple[np.ndarray, np.ndarray]]
+):
+    config = pycolmap.BundleAdjustmentConfig()
+    for image_id in model.reg_image_ids():
+        config.add_image(image_id)
+    pose_priors = []
+    for image_id, (centre, cov) in priors.items():
+        prior = pycolmap.PosePrior()
+        prior.position = np.asarray(centre, float)
+        prior.position_covariance = np.asarray(cov, float)
+        prior.coordinate_system = pycolmap.PosePriorCoordinateSystem.CARTESIAN
+        image = model.images[image_id]
+        prior.corr_data_id = pycolmap.data_t(
+            sensor_id=pycolmap.sensor_t(type=pycolmap.SensorType.CAMERA, id=image.camera_id), id=image_id
+        )
+        pose_priors.append(prior)
+    adjuster = pycolmap.create_pose_prior_bundle_adjuster(
+        pycolmap.BundleAdjustmentOptions(),
+        pycolmap.PosePriorBundleAdjustmentOptions(),
+        config,
+        pose_priors,
+        model,
+    )
+    adjuster.solve()

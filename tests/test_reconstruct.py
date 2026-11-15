@@ -178,3 +178,43 @@ def test_reconstruct_refuses_when_too_few_images_register(tmp_path):
     _synthetic_workspace(tmp_path)
     with pytest.raises(ReconstructionError, match="registered"):
         reconstruct(tmp_path / "ws", tmp_path, min_registered_fraction=1.01)
+
+
+def test_refine_moves_priors_from_the_antenna_to_the_cameras(tmp_path):
+    import json
+
+    from georoute.reconstruct import refine
+    from georoute.rig import Camera, Rig
+
+    truth = _synthetic_workspace(tmp_path)
+    (tmp_path / "ws" / "sparse" / "0").mkdir(parents=True)
+    truth.write(tmp_path / "ws" / "sparse" / "0")
+    rig = Rig(
+        "synthetic",
+        True,
+        (Camera(0, "", "cam0", None, np.array([0.3, 0.1, 0.0]), (0.0, 0.0, 0.0)),),
+        np.array([0.0, 0.0, 0.0]),
+        1.0,
+        0.0,
+        "x",
+    )
+    record = {}
+    for image in truth.images.values():
+        world_from_cam = image.cam_from_world().rotation.matrix().T
+        world_from_rig = world_from_cam @ rig.rig_from_camera(0).T
+        antenna = image.projection_center() - world_from_rig @ rig.camera(0).position_in_rig_m
+        record[image.name] = {
+            "camera": 0,
+            "antenna_enu": antenna.tolist(),
+            "sigma_h_m": 0.01,
+            "sigma_v_m": 0.01,
+            "centre": antenna.tolist(),
+            "covariance": (np.eye(3) * 1e-4).tolist(),
+        }
+    (tmp_path / "ws" / "priors.json").write_text(json.dumps(record))
+    result = refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0)
+    assert result["iterations"] <= 4
+    refined = json.loads((tmp_path / "ws" / "priors.json").read_text())
+    for image in truth.images.values():
+        np.testing.assert_allclose(refined[image.name]["centre"], image.projection_center(), atol=0.01)
+    assert (tmp_path / "ws" / "sparse" / "refined").is_dir()
