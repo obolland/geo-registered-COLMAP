@@ -1,5 +1,8 @@
 """COLMAP reconstruction with per-image position priors in the session's ENU frame."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pycolmap
 
@@ -61,3 +64,55 @@ def write_priors(db: pycolmap.Database, priors: dict[str, tuple[np.ndarray, np.n
         db.write_pose_prior(prior)
         written += 1
     return written
+
+
+def prepare(
+    images_json,
+    images_root,
+    workspace,
+    rig: Rig,
+    pulses: tuple[int, int] | None = None,
+    max_image_size: int = 3200,
+) -> dict:
+    """Workspace for COLMAP: a database with one OPENCV camera per folder, SIFT features (CPU) and
+    first-pass priors, plus priors.json recording them. pulses=(first, last) limits it to a subset."""
+    data = json.loads(Path(images_json).read_text())
+    images = [i for i in data["images"] if pulses is None or pulses[0] <= i["pulse"] <= pulses[1]]
+    if not images:
+        raise ValueError("no images in the requested pulse range")
+    workspace = Path(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    db_path = workspace / "database.db"
+    db_path.unlink(missing_ok=True)
+
+    reader = pycolmap.ImageReaderOptions()
+    reader.camera_model = "OPENCV"
+    extraction = pycolmap.FeatureExtractionOptions()
+    extraction.use_gpu = False
+    extraction.max_image_size = max_image_size
+    pycolmap.extract_features(
+        db_path,
+        Path(images_root),
+        image_names=[i["path"] for i in images],
+        camera_mode=pycolmap.CameraMode.PER_FOLDER,
+        reader_options=reader,
+        extraction_options=extraction,
+        device=pycolmap.Device.cpu,
+    )
+
+    priors = first_pass_priors(images, rig)
+    with pycolmap.Database.open(db_path) as db:
+        written = write_priors(db, priors)
+        summary = {
+            "images": db.num_images(),
+            "cameras": db.num_cameras(),
+            "priors": written,
+            "frame_id": data["frame"]["id"],
+        }
+    (workspace / "priors.json").write_text(
+        json.dumps(
+            {name: {"centre": c.tolist(), "covariance": cov.tolist()} for name, (c, cov) in priors.items()},
+            indent=1,
+        )
+    )
+    return summary

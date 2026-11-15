@@ -81,3 +81,45 @@ def test_priors_are_written_to_the_database_with_their_covariance(tmp_path):
         assert prior.coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
         np.testing.assert_allclose(prior.position, [1.0, 2.0, 3.0])
         np.testing.assert_allclose(prior.position_covariance, cov)
+
+
+def _textured_photos(root, rig, n=4):
+    from PIL import Image
+
+    rng = np.random.default_rng(0)
+    images = []
+    for cam in (0, 1):
+        (root / f"cam{cam}").mkdir(parents=True, exist_ok=True)
+        for k in range(n):
+            path = f"cam{cam}/IMG_{k:04d}.JPG"
+            Image.fromarray((rng.random((240, 320, 3)) * 255).astype("uint8")).save(root / path)
+            images.append(
+                {
+                    "path": path,
+                    "camera": cam,
+                    "pulse": k + 2,
+                    "antenna_enu": [k * 0.8, 0.0, 1.2],
+                    "has_prior": k != 1,
+                    "prior_sigma_h_m": 0.014,
+                    "prior_sigma_v_m": 0.011,
+                    "velocity_enu": [1.3, 0.0, 0.0],
+                }
+            )
+    return images
+
+
+def test_prepare_extracts_features_per_camera_folder_and_writes_priors(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    summary = prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig, pulses=(2, 4))
+    assert summary == {"images": 6, "cameras": 2, "priors": 4, "frame_id": "test"}
+    with pycolmap.Database.open(tmp_path / "ws" / "database.db") as db:
+        assert db.num_images() == 6 and db.num_cameras() == 2 and db.num_pose_priors() == 4
+        assert all(c.model == pycolmap.CameraModelId.OPENCV for c in db.read_all_cameras())
+        assert db.num_keypoints() > 0
+    assert json.loads((tmp_path / "ws" / "priors.json").read_text())["cam0/IMG_0000.JPG"]["centre"]

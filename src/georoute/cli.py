@@ -59,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--curtain-travel-ms", type=float, help="overrides the rig's value (default 0 without a rig)"
     )
     run.epilog = "exit status: 0 ok, 1 refused (integrity, matching or positioning), 2 session unreadable"
+    prep = sub.add_parser("colmap-prepare", help="COLMAP workspace: features per camera and camera priors")
+    prep.add_argument("images_json", type=Path, help="images.json from ingest")
+    prep.add_argument("images_root", type=Path, help="the images folder ingest was run on")
+    prep.add_argument("--rig", type=Path, required=True)
+    prep.add_argument("--out", type=Path, required=True, help="workspace folder")
+    prep.add_argument("--pulses", help="only pulses FIRST-LAST, for a quick subset")
     rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
     rig.add_argument("rig_toml", type=Path)
     return parser
@@ -73,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
         return _match(args)
     if args.command == "ingest":
         return _ingest(args)
+    if args.command == "colmap-prepare":
+        return _colmap_prepare(args)
     if args.command == "rig-check":
         return _rig_check(args)
     parser.print_help()
@@ -176,3 +184,19 @@ def _rig_check(args) -> int:
 
 def _rig(args):
     return load_rig(args.rig) if args.rig else None
+
+
+def _colmap_prepare(args) -> int:
+    from georoute.reconstruct import prepare
+
+    pulses = tuple(int(x) for x in args.pulses.split("-")) if args.pulses else None
+    try:
+        summary = prepare(args.images_json, args.images_root, args.out, load_rig(args.rig), pulses)
+    except (RigError, ValueError, OSError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    print(
+        f"{summary['images']} images, {summary['cameras']} cameras, {summary['priors']} priors "
+        f"(frame {summary['frame_id']}); workspace {args.out}"
+    )
+    return 0
