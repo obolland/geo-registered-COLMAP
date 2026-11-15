@@ -3,6 +3,7 @@ and writes a calibrated rig config that keeps the hand measurements alongside.""
 
 import json
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -137,3 +138,16 @@ def _toml_value(value) -> str:
     if isinstance(value, list | tuple):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     return repr(value)
+
+
+def with_orientations(rig: Rig, calibration: dict[str, dict]) -> Rig:
+    """The rig with each calibrated camera's orientation replaced, positions unchanged."""
+    cameras = tuple(
+        replace(
+            c, yaw_pitch_roll_deg=tuple(float(x) for x in calibration[f"cam{c.index}"]["yaw_pitch_roll_deg"])
+        )
+        if f"cam{c.index}" in calibration
+        else c
+        for c in rig.cameras
+    )
+    return replace(rig, cameras=cameras)

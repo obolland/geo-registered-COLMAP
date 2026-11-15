@@ -72,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--pulses", help="only pulses FIRST-LAST")
     run.epilog = "exit status: 0 report passes its gates, 1 refused or gates failed (see report.json)"
+    rep = sub.add_parser("colmap-report", help="re-check a workspace's reconstruction against priors and rig")
+    rep.add_argument("workspace", type=Path)
+    rep.add_argument("--rig", type=Path, required=True)
     cal = sub.add_parser("rig-calibrate", help="calibrated rig config from a workspace's reconstruction")
     cal.add_argument("workspace", type=Path)
     cal.add_argument("--rig", type=Path, required=True)
@@ -94,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
         return _colmap_prepare(args)
     if args.command == "colmap-run":
         return _colmap_run(args)
+    if args.command == "colmap-report":
+        return _colmap_report(args)
     if args.command == "rig-calibrate":
         return _rig_calibrate(args)
     if args.command == "rig-check":
@@ -204,8 +209,8 @@ def _rig(args):
 def _colmap_prepare(args) -> int:
     from georoute.reconstruct import prepare
 
-    pulses = tuple(int(x) for x in args.pulses.split("-")) if args.pulses else None
     try:
+        pulses = _pulse_range(args.pulses)
         summary = prepare(args.images_json, args.images_root, args.out, load_rig(args.rig), pulses)
     except (RigError, ValueError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
@@ -220,8 +225,8 @@ def _colmap_prepare(args) -> int:
 def _colmap_run(args) -> int:
     from georoute.reconstruct import ReconstructionError, match, prepare, reconstruct, refine, report
 
-    pulses = tuple(int(x) for x in args.pulses.split("-")) if args.pulses else None
     try:
+        pulses = _pulse_range(args.pulses)
         rig = load_rig(args.rig)
         print("prepare:", prepare(args.images_json, args.images_root, args.out, rig, pulses), flush=True)
         matched = match(args.out)
@@ -234,7 +239,7 @@ def _colmap_run(args) -> int:
         print(f"map: {mapped['registered']} of {mapped['images']} registered", flush=True)
         print("refine:", refine(args.out, rig), flush=True)
         result = report(args.out, rig)
-    except (RigError, ValueError, OSError, ReconstructionError) as e:
+    except (RigError, ValueError, OSError, KeyError, ReconstructionError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     for failure in result["failures"]:
@@ -249,7 +254,7 @@ def _rig_calibrate(args) -> int:
 
     try:
         result = calibrate_rig(args.workspace, args.rig, args.out)
-    except (RigError, CalibrationError, OSError) as e:
+    except (RigError, CalibrationError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     for camera, c in result["cameras"].items():
@@ -262,3 +267,32 @@ def _rig_calibrate(args) -> int:
         f"written to {args.out}"
     )
     return 0
+
+
+def _pulse_range(text: str | None) -> tuple[int, int] | None:
+    if text is None:
+        return None
+    first, sep, last = text.partition("-")
+    if not (sep and first.isdigit() and last.isdigit() and int(first) <= int(last)):
+        raise ValueError(f"--pulses must be FIRST-LAST, got {text!r}")
+    return int(first), int(last)
+
+
+def _colmap_report(args) -> int:
+    from georoute.reconstruct import report
+
+    try:
+        result = report(args.workspace, load_rig(args.rig))
+    except (RigError, OSError, ValueError, KeyError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    for camera, r in result["prior_residuals"].items():
+        if r["images"]:
+            print(
+                f"{camera}: prior residual p95 horizontal {r['horizontal_p95_m'] * 100:.1f} cm, "
+                f"vertical {r['vertical_p95_m'] * 100:.1f} cm over {r['images']} fixed photos"
+            )
+    for failure in result["failures"]:
+        print(f"GATE {failure}", file=sys.stderr)
+    print(f"report: {args.workspace / 'report.json'}")
+    return 1 if result["failures"] else 0

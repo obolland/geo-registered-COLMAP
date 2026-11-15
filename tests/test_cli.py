@@ -19,3 +19,14 @@ def test_colmap_commands_parse():
     )
     assert args.command == "colmap-run" and args.pulses == "1-5"
     assert build_parser().parse_args(["rig-calibrate", "ws", "--rig", "r.toml", "--out", "c.toml"]).command
+
+
+def test_pulse_ranges_are_strict():
+    import pytest
+
+    from georoute.cli import _pulse_range
+
+    assert _pulse_range("10-20") == (10, 20) and _pulse_range(None) is None
+    for bad in ("10", "20-10", "a-b", "-5"):
+        with pytest.raises(ValueError):
+            _pulse_range(bad)

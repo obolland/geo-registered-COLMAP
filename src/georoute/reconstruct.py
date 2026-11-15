@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pycolmap
 
-from georoute.colmap_report import gate, prior_residuals, rig_check
+from georoute.colmap_report import GATES, gate, prior_residuals, rig_check, scale_against_priors
 from georoute.rig import Rig, refine_priors
 
 # First-pass priors assume a level rig, so allow for the bike's lean and pitch moving the lever arm.
@@ -298,13 +298,25 @@ def report(workspace, rig: Rig, reference: int = 2) -> dict:
     priors = {n: np.array(r["centre"]) for n, r in record.items()}
     residuals = prior_residuals(priors, centres, {n: r["fixed"] for n, r in record.items()})
     rig_result = rig_check(poses, rig, reference)
+    cameras = sorted({f"cam{r['camera']}" for r in record.values()})
+    order = {n: r["pulse"] for n, r in record.items()}
     out = {
         "model": which,
+        "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured},
+        "gates": GATES,
+        "registration": {
+            c: {
+                "photos": sum(n.startswith(f"{c}/") for n in record),
+                "registered": sum(n.startswith(f"{c}/") for n in centres),
+            }
+            for c in cameras
+        },
+        "scale_against_rtk": scale_against_priors(priors, centres, order, f"cam{reference}"),
         "mapping": json.loads((workspace / "mapping.json").read_text()),
         "mean_reprojection_error_px": model.compute_mean_reprojection_error(),
         "prior_residuals": residuals,
-        "rig": rig_result,
-        "failures": gate(residuals, rig_result),
+        "rig_check": rig_result,
+        "failures": gate(residuals, rig_result, cameras),
     }
     (workspace / "report.json").write_text(json.dumps(out, indent=1))
     return out
@@ -329,12 +341,12 @@ def _model_poses(workspace: Path):
 
 def calibrate_rig(workspace, rig_path, out_path, reference: int = 2) -> dict:
     """Calibrated rig config from the workspace's reconstruction (see calibrate.py)."""
-    from georoute.calibrate import calibrate_rotations, write_calibrated_rig
+    from georoute.calibrate import calibrate_rotations, with_orientations, write_calibrated_rig
     from georoute.rig import load_rig
 
     rig = load_rig(rig_path)
     _, poses, _, _, _ = _model_poses(Path(workspace))
     calibration = calibrate_rotations(poses, rig, reference)
-    offset = rig_check(poses, rig, reference)["axial_offset_m"]
+    offset = rig_check(poses, with_orientations(rig, calibration), reference)["axial_offset_m"]
     write_calibrated_rig(rig_path, out_path, calibration, reference, offset, source=str(workspace))
     return {"cameras": calibration, "axial_offset_m": offset}

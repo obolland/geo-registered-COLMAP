@@ -68,3 +68,14 @@ def test_calibration_needs_enough_consistent_pulses():
         calibrate_rotations(few, rig, reference=2)
     with pytest.raises(CalibrationError, match="reference"):
         calibrate_rotations({k: v for k, v in _poses(rig).items() if k[1] != 2}, rig, reference=2)
+
+
+def test_the_optical_centre_offset_is_estimated_with_the_calibrated_orientations():
+    from georoute.calibrate import with_orientations
+    from georoute.colmap_report import rig_check
+
+    rig = load_rig(EXAMPLE)
+    poses = _poses(rig, axial_offset_m=0.025, yaw_error_deg=(0, -9.5))
+    calibrated = with_orientations(rig, calibrate_rotations(poses, rig, reference=2))
+    assert rig_check(poses, calibrated, reference=2)["axial_offset_m"] == pytest.approx(0.025, abs=1e-6)
+    assert abs(rig_check(poses, rig, reference=2)["axial_offset_m"] - 0.025) > 1e-4  # hand angles bias it

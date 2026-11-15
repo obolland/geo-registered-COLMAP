@@ -17,7 +17,7 @@ def _poses(rig, axial_offset_m=0.04, pulses=20, yaw_error_deg=None):
             rig_from_cam = rig.rig_from_camera(cam.index)
             if yaw_error_deg and cam.index == yaw_error_deg[0]:
                 rig_from_cam = _rot_z(yaw_error_deg[1]) @ rig_from_cam
-            centre_in_rig = cam.position_in_rig_m - axial_offset_m * rig.rig_from_camera(cam.index)[:, 2]
+            centre_in_rig = cam.position_in_rig_m - axial_offset_m * rig_from_cam[:, 2]
             poses[(k, cam.index)] = (world_from_rig @ rig_from_cam, origin + world_from_rig @ centre_in_rig)
     return poses
 
@@ -95,3 +95,12 @@ def test_gate_fails_when_a_camera_or_its_evidence_is_missing():
     assert any("cam0" in f and "no RTK-fixed" in f for f in failures)
     assert any("cam2" in f and "3 pulses" in f for f in failures)
     assert any("cam3" in f and "no registered" in f for f in failures)
+
+
+def test_scale_against_rtk_compares_path_lengths():
+    from georoute.colmap_report import scale_against_priors
+
+    priors = {f"cam2/{k}": np.array([k * 1.0, 0, 0]) for k in range(10)}
+    centres = {f"cam2/{k}": np.array([k * 1.001, 0, 0]) for k in range(10)}
+    order = {f"cam2/{k}": k for k in range(10)}
+    assert scale_against_priors(priors, centres, order, "cam2") == pytest.approx(1.001)

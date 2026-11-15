@@ -95,3 +95,17 @@ def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) 
         if r["angle_error_deg"] > GATES["rig_angle_deg"]:
             failures.append(f"{camera} points {r['angle_error_deg']:.1f} degrees from its rig orientation")
     return failures
+
+
+def scale_against_priors(
+    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], order: dict[str, int], camera: str
+) -> float | None:
+    """Reconstructed path length over the prior path length, along one camera's photos in pulse order."""
+    names = sorted((n for n in priors if n.startswith(f"{camera}/") and n in centres), key=order.get)
+    if len(names) < 2:
+        return None
+    prior_length = sum(np.linalg.norm(priors[b] - priors[a]) for a, b in zip(names, names[1:], strict=False))
+    model_length = sum(
+        np.linalg.norm(centres[b] - centres[a]) for a, b in zip(names, names[1:], strict=False)
+    )
+    return float(model_length / prior_length) if prior_length > 0 else None
