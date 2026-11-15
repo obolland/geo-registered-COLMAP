@@ -125,3 +125,11 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 - Subset (pulses 100-250, 604 photos): one model, all registered, 0.98 px; 8269 verified pairs including strong cross-camera pairs.
 - The hand-measured side-camera yaw was 50 degrees but the photos say 40.5 and 39.8 (probably measured from the bar); calibration fixes it, and the optical centre sits about 24 mm behind the lens front. After calibration: horizontal prior residual p95 4.1-4.5 cm (passes), rig agreement 0.6-1.3 cm and 0.03 degrees.
 - Open: vertical prior residual p95 about 6 cm, from one stretch (pulses 136-158) where the reconstruction sits up to 8 cm below RTK heights that Doppler supports; that stretch has weaker ties (about 1860 points per photo against 2600-3000). Full session (loop closure) running to see whether it persists.
+
+## Slice 6: full session 1 and lessons (2026-11-15)
+
+- Olly: prioritise accuracy and correctness over speed; production runs on a cloud GPU. Speed-ups only where verified not to cost accuracy.
+- Incremental mapping of 2464 photos on this Mac ran 4.5 h without finishing, then was stopped for memory (two mappers in parallel on 16 GB was my mistake). The global mapper registered all 2464 in one model in 60 min; fitted to the priors by RANSAC Sim3, then refined.
+- Full session 1 (global): reprojection 0.97 px, scale against the RTK path 0.99993, rig within 0.6-1.3 cm and 0.04-0.12 degrees, vertical prior residual p95 4.1-4.5 cm (loop closure fixed the subset's dip), horizontal p50 2.3-2.5 cm but p95 5.6-6.1 cm (gate 5 cm), with no mean bias.
+- The horizontal tail sits in three stretches with visible causes, not RTK (hAcc 14-15 mm throughout): close ivy hedge and bare branches (pulses 138-151), parked vans and cars close to the cameras (430-468), and a sharp turn at a junction with plain tarmac (589-597).
+- Lessons for the pipeline: vehicle masking should also remove bad matches; the gate should report weak stretches rather than one route-wide p95; refine's full bundle adjustment took about an hour per round, so a point-sampled refine is under test against the full result; Auto ISO gives visibly different exposure between cameras, so capture should fix exposure across cameras.
