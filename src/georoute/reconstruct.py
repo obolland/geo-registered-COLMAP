@@ -48,13 +48,15 @@ def _headings(images: list[dict]) -> list[np.ndarray]:
 
 
 def write_priors(db: pycolmap.Database, priors: dict[str, tuple[np.ndarray, np.ndarray]]) -> int:
-    """Writes CARTESIAN position priors, with covariance, for every named image present in the database."""
+    """Writes CARTESIAN position priors, with covariance, for every named image present in the database,
+    replacing any existing prior (feature extraction writes an empty one per image)."""
     written = 0
+    existing = {p.corr_data_id.id: p for p in db.read_all_pose_priors()}
     for image in db.read_all_images():
         if image.name not in priors:
             continue
         centre, cov = priors[image.name]
-        prior = pycolmap.PosePrior()
+        prior = existing.get(image.image_id, pycolmap.PosePrior())
         prior.position = np.asarray(centre, float)
         prior.position_covariance = np.asarray(cov, float)
         prior.coordinate_system = pycolmap.PosePriorCoordinateSystem.CARTESIAN
@@ -62,7 +64,10 @@ def write_priors(db: pycolmap.Database, priors: dict[str, tuple[np.ndarray, np.n
             sensor_id=pycolmap.sensor_t(type=pycolmap.SensorType.CAMERA, id=image.camera_id),
             id=image.image_id,
         )
-        db.write_pose_prior(prior)
+        if image.image_id in existing:
+            db.update_pose_prior(prior)
+        else:
+            db.write_pose_prior(prior)
         written += 1
     return written
 

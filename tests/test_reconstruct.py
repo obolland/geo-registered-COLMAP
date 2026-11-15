@@ -227,3 +227,18 @@ def test_extraction_uses_every_core_and_no_upsampling():
 
     options = extraction_options()
     assert options.num_threads == os.cpu_count() and options.sift.first_octave == 0 and not options.use_gpu
+
+
+def test_priors_replace_the_placeholders_feature_extraction_writes(tmp_path):
+    with pycolmap.Database.open(tmp_path / "database.db") as db:
+        camera_id = db.write_camera(pycolmap.Camera.create_from_model_name(1, "OPENCV", 4000.0, 5184, 3456))
+        image_id = db.write_image(pycolmap.Image(name="cam0/IMG_0001.JPG", camera_id=camera_id))
+        placeholder = pycolmap.PosePrior()
+        placeholder.corr_data_id = pycolmap.data_t(
+            sensor_id=pycolmap.sensor_t(type=pycolmap.SensorType.CAMERA, id=camera_id), id=image_id
+        )
+        db.write_pose_prior(placeholder)
+        assert write_priors(db, {"cam0/IMG_0001.JPG": (np.array([1.0, 2.0, 3.0]), np.eye(3) * 1e-4)}) == 1
+        (prior,) = db.read_all_pose_priors()
+        np.testing.assert_allclose(prior.position, [1.0, 2.0, 3.0])
+        assert prior.coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
