@@ -218,3 +218,12 @@ def test_refine_moves_priors_from_the_antenna_to_the_cameras(tmp_path):
     for image in truth.images.values():
         np.testing.assert_allclose(refined[image.name]["centre"], image.projection_center(), atol=0.01)
     assert (tmp_path / "ws" / "sparse" / "refined").is_dir()
+
+
+def test_extraction_uses_every_core_and_no_upsampling():
+    import os
+
+    from georoute.reconstruct import extraction_options
+
+    options = extraction_options()
+    assert options.num_threads == os.cpu_count() and options.sift.first_octave == 0 and not options.use_gpu

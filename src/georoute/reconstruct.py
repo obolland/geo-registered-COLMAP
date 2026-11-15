@@ -1,6 +1,7 @@
 """COLMAP reconstruction with per-image position priors in the session's ENU frame."""
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +67,17 @@ def write_priors(db: pycolmap.Database, priors: dict[str, tuple[np.ndarray, np.n
     return written
 
 
+def extraction_options(max_image_size: int = 3200) -> pycolmap.FeatureExtractionOptions:
+    """CPU SIFT starting at full resolution. COLMAP's default first octave of -1 doubles each image first,
+    which on this Mac made extraction about 30 times slower for about 20% more keypoints."""
+    options = pycolmap.FeatureExtractionOptions()
+    options.use_gpu = False
+    options.max_image_size = max_image_size
+    options.num_threads = os.cpu_count() or 1
+    options.sift.first_octave = 0
+    return options
+
+
 def prepare(
     images_json,
     images_root,
@@ -87,9 +99,7 @@ def prepare(
 
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "OPENCV"
-    extraction = pycolmap.FeatureExtractionOptions()
-    extraction.use_gpu = False
-    extraction.max_image_size = max_image_size
+    extraction = extraction_options(max_image_size)
     pycolmap.extract_features(
         db_path,
         Path(images_root),
