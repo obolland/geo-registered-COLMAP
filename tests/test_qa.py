@@ -9,9 +9,13 @@ from georoute import qa
 from georoute.package import cut_segments
 from georoute.path import distance_profile, rider_path
 from georoute.qa import (
+    DESIGN_SPEED_MPS,
+    LONGITUDINAL_ACCEL_LIMIT_MPS2,
     RTK_GAP_LIMIT_M,
     THRESHOLDS_VERSION,
     QAError,
+    _speed_profile,
+    _yaw_acceleration,
     assess,
     write_plots,
     write_qa,
@@ -36,6 +40,7 @@ def test_a_clean_route_passes_every_gate_and_reports_its_thresholds():
     assert document["thresholds"]["measure"] is True
     assert document["thresholds"]["path_lateral_p95_m"] == 0.10
     assert document["thresholds"]["path_lateral_max_m"] == 0.30
+    assert document["thresholds"]["longitudinal_accel_mps2"] == 1.5
     assert [gate["name"] for gate in document["segments"][0]["gates"]] == [
         "path-to-road",
         "comfort",
@@ -102,6 +107,47 @@ def test_path_to_road_fails_a_segment_when_the_smoothed_path_departs_vertically(
     assert "seg_0000 path to road" in gate.detail
 
 
+class CurvaturePath:
+    def __init__(self, s, curvature):
+        self.s_m = s
+        self.curvature_1pm = curvature
+
+
+def test_a_clothoid_entry_has_the_analytic_yaw_acceleration():
+    s = np.arange(0.0, 201.0, 0.1)
+    radius, clothoid = 150.0, 30.0
+    curvature = np.where(s < clothoid, (1.0 / radius) * (s / clothoid), 1.0 / radius)
+    expected = np.degrees(DESIGN_SPEED_MPS**2 * (1.0 / radius) / clothoid)
+
+    yaw = _yaw_acceleration(CurvaturePath(s, curvature))
+
+    assert yaw[(s > 5.0) & (s < clothoid - 5.0)].max() == pytest.approx(expected, rel=0.02)
+
+
+def test_a_zero_crossing_beside_a_tight_bend_does_not_use_design_speed():
+    s = np.arange(0.0, 30.0, 0.05)
+    curvature = np.zeros_like(s)
+    entry = (s >= 9.0) & (s < 10.0)
+    curvature[entry] = -0.31 * (s[entry] - 9.0)
+    ramp = (s >= 10.0) & (s < 11.0)
+    curvature[ramp] = -0.31 + 0.40 * (s[ramp] - 10.0)
+    curvature[(s >= 11.0) & (s < 12.0)] = 0.09
+    exit_ramp = (s >= 12.0) & (s < 13.0)
+    curvature[exit_ramp] = 0.09 * (13.0 - s[exit_ramp])
+    path = CurvaturePath(s, curvature)
+
+    speed = _speed_profile(s, curvature)
+    yaw = _yaw_acceleration(path)
+
+    near = (s >= 9.5) & (s <= 12.5)
+    assert speed[near].max() < 8.0
+    assert yaw[near].max() < 1000.0
+    assert speed[np.argmax(yaw)] < 10.0
+    steps = np.diff(speed**2)
+    assert steps.max() <= 2 * LONGITUDINAL_ACCEL_LIMIT_MPS2 * np.diff(s).max() + 1e-6
+    assert (-steps).max() <= 2 * LONGITUDINAL_ACCEL_LIMIT_MPS2 * np.diff(s).max() + 1e-6
+
+
 def test_comfort_fails_on_a_curvature_step_at_design_speed():
     path, profile, route = clean_route()
     curvature = path.curvature_1pm.copy()
@@ -115,6 +161,7 @@ def test_comfort_fails_on_a_curvature_step_at_design_speed():
     assert gate.name == "comfort"
     assert gate.status == "fail"
     assert gate.values["max_yaw_accel_deg_s2"] > 30.0
+    assert gate.values["s_at_max_m"] > 0.0
 
 
 def test_a_long_float_run_is_a_warning_when_registered_cameras_carry_the_path():

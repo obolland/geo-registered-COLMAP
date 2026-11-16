@@ -19,6 +19,7 @@ PATH_LATERAL_MAX_M = 0.30
 YAW_ACCEL_LIMIT_DEG_S2 = 30.0
 DESIGN_SPEED_MPS = 18.0
 LATERAL_ACCEL_LIMIT_MPS2 = 3.0
+LONGITUDINAL_ACCEL_LIMIT_MPS2 = 1.5
 RTK_GAP_LIMIT_M = 50.0
 BRIDGED_GAP_MAX_M = 10.0
 BRIDGED_GRADE_LIMIT_PERCENT = 0.5
@@ -99,6 +100,7 @@ class QAReport:
                 "path_lateral_p95_m",
                 "path_lateral_max_m",
                 "yaw_accel_deg_s2",
+                "longitudinal_accel_mps2",
                 "rtk_gap_m",
                 "bridged_gap_m",
                 "bridged_grade_percent",
@@ -109,6 +111,7 @@ class QAReport:
             "yaw_accel_deg_s2": YAW_ACCEL_LIMIT_DEG_S2,
             "design_speed_mps": DESIGN_SPEED_MPS,
             "lateral_accel_limit_mps2": LATERAL_ACCEL_LIMIT_MPS2,
+            "longitudinal_accel_mps2": LONGITUDINAL_ACCEL_LIMIT_MPS2,
             "rtk_gap_m": RTK_GAP_LIMIT_M,
             "bridged_gap_m": BRIDGED_GAP_MAX_M,
             "bridged_grade_percent": BRIDGED_GRADE_LIMIT_PERCENT,
@@ -198,16 +201,34 @@ def _trace_deviations(path: RiderPath):
     return lateral, vertical
 
 
+def _speed_profile(s, curvature):
+    """A physically reachable speed: capped by the lateral acceleration limit in bends, then limited forward
+    and backward so v^2 changes by at most 2*a_long*ds per step. Pointwise capping alone lets speed jump
+    between adjacent samples and invents yaw acceleration that no rider could produce."""
+    limit = np.full_like(curvature, DESIGN_SPEED_MPS)
+    bend = np.abs(curvature) > 1e-12
+    limit[bend] = np.minimum(DESIGN_SPEED_MPS, np.sqrt(LATERAL_ACCEL_LIMIT_MPS2 / np.abs(curvature[bend])))
+    squared = limit**2
+    spacing = np.diff(s)
+    for index in range(1, len(squared)):
+        squared[index] = min(
+            squared[index], squared[index - 1] + 2 * LONGITUDINAL_ACCEL_LIMIT_MPS2 * spacing[index - 1]
+        )
+    for index in range(len(squared) - 2, -1, -1):
+        squared[index] = min(
+            squared[index], squared[index + 1] + 2 * LONGITUDINAL_ACCEL_LIMIT_MPS2 * spacing[index]
+        )
+    return np.sqrt(squared)
+
+
 def _yaw_acceleration(path: RiderPath) -> np.ndarray:
-    """Yaw acceleration at design speed, with the speed capped in bends by the lateral acceleration limit so
-    the app's bend policy, not the geometry alone, decides whether a turn is comfortable."""
-    derivative = np.gradient(path.curvature_1pm, path.s_m)
-    speed = np.full_like(path.curvature_1pm, DESIGN_SPEED_MPS)
-    bend = np.abs(path.curvature_1pm) > 1e-12
-    speed[bend] = np.minimum(
-        DESIGN_SPEED_MPS, np.sqrt(LATERAL_ACCEL_LIMIT_MPS2 / np.abs(path.curvature_1pm[bend]))
-    )
-    return np.degrees(speed**2 * np.abs(derivative))
+    """Yaw acceleration on the reachable speed profile: the time derivative of yaw rate v*kappa is
+    v*(v*dkappa/ds + kappa*dv/ds)."""
+    speed = _speed_profile(path.s_m, path.curvature_1pm)
+    dcurvature = np.gradient(path.curvature_1pm, path.s_m)
+    dspeed = np.gradient(speed, path.s_m)
+    acceleration = speed * (speed * dcurvature + path.curvature_1pm * dspeed)
+    return np.degrees(np.abs(acceleration))
 
 
 def _segment_mask(s, start, end):
@@ -253,16 +274,21 @@ def _path_gate(segment, path, lateral, vertical):
 
 def _comfort_gate(segment, path, yaw):
     mask = _segment_mask(path.s_m, segment.s_start, segment.s_end)
-    maximum = float(yaw[mask].max())
+    candidates = np.flatnonzero(mask)
+    peak = int(candidates[np.argmax(yaw[mask])])
+    maximum = float(yaw[peak])
+    s_at = float(path.s_m[peak])
     failed = maximum > YAW_ACCEL_LIMIT_DEG_S2
     detail = (
-        f"{segment.seg_id} comfort: yaw acceleration {maximum:.1f} deg/s^2 at design speed" if failed else ""
+        f"{segment.seg_id} comfort: yaw acceleration {maximum:.1f} deg/s^2 at s={s_at:.1f} m"
+        if failed
+        else ""
     )
     return GateResult(
         "comfort",
         "fail" if failed else "pass",
         "fail",
-        {"max_yaw_accel_deg_s2": maximum},
+        {"max_yaw_accel_deg_s2": maximum, "s_at_max_m": s_at},
         {"yaw_accel_deg_s2": YAW_ACCEL_LIMIT_DEG_S2},
         detail,
     )
