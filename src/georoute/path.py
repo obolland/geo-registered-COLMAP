@@ -203,12 +203,50 @@ DENSE_STEP_M = 0.1
 # Contacts closer than this along the trace are a stop: averaging them collapses the stop without inventing
 # motion or a zero-length spline interval.
 MIN_TRACE_SPACING_M = 0.01
-# The smoothed path may not depart from the reconstructed road trace by more than these; the strongest
-# smoothing that respects each bound is used. Horizontal weave is removed up to the registration bound;
-# vertical is tighter because it is only fit noise, not rider motion, and the QA gate is 3 cm.
-HORIZONTAL_SMOOTHING_BOUND_M = 0.10
+# Horizontal smoothing is comfort-first: start from the old registration-bound fit, then locally reduce
+# spline weights around comfort violations until yaw acceleration is at most 30 deg/s^2 under a reachable
+# speed profile. Departure from the trace is minimised by keeping the fit local, with a hard 0.5 m cap.
+# Vertical stays a 3 cm p95 bound because it is only fit noise, not rider motion.
+HORIZONTAL_INITIAL_P95_M = 0.10
+HORIZONTAL_MAX_DEPARTURE_M = 0.50
 VERTICAL_SMOOTHING_BOUND_M = 0.03
+COMFORT_WINDOW_M = 20.0
+COMFORT_S_MULTIPLIERS = (1.0, 1.5, 2.0, 3.0, 5.0)
+COMFORT_WEIGHT_FACTORS = (0.5, 0.2, 0.1, 0.05, 0.02)
+MAX_COMFORT_ITERATIONS = 10
+DESIGN_SPEED_MPS = 18.0
+LATERAL_ACCEL_LIMIT_MPS2 = 3.0
+LONGITUDINAL_ACCEL_LIMIT_MPS2 = 1.5
+COMFORT_YAW_ACCEL_LIMIT_DEG_S2 = 30.0
 MAX_SMOOTHING_S = 1e12
+
+
+def speed_profile(s, curvature):
+    """A reachable speed: capped by the lateral acceleration limit in bends, then limited forward and
+    backward so v^2 changes by at most 2*a_long*ds per step."""
+    limit = np.full_like(curvature, DESIGN_SPEED_MPS)
+    bend = np.abs(curvature) > 1e-12
+    limit[bend] = np.minimum(DESIGN_SPEED_MPS, np.sqrt(LATERAL_ACCEL_LIMIT_MPS2 / np.abs(curvature[bend])))
+    squared = limit**2
+    spacing = np.diff(s)
+    for index in range(1, len(squared)):
+        squared[index] = min(
+            squared[index], squared[index - 1] + 2 * LONGITUDINAL_ACCEL_LIMIT_MPS2 * spacing[index - 1]
+        )
+    for index in range(len(squared) - 2, -1, -1):
+        squared[index] = min(
+            squared[index], squared[index + 1] + 2 * LONGITUDINAL_ACCEL_LIMIT_MPS2 * spacing[index]
+        )
+    return np.sqrt(squared)
+
+
+def yaw_acceleration(s, curvature):
+    """Yaw acceleration on the reachable speed profile, in degrees/s^2: the time derivative of v*kappa."""
+    speed = speed_profile(s, curvature)
+    dcurvature = np.gradient(curvature, s)
+    dspeed = np.gradient(speed, s)
+    acceleration = speed * (speed * dcurvature + curvature * dspeed)
+    return np.degrees(np.abs(acceleration))
 
 
 @dataclass(frozen=True)
@@ -259,13 +297,13 @@ class RiderPath:
 def rider_path(
     contacts,
     frame: LocalFrame,
-    horizontal_bound_m: float = HORIZONTAL_SMOOTHING_BOUND_M,
     vertical_bound_m: float = VERTICAL_SMOOTHING_BOUND_M,
 ) -> RiderPath:
     """The road-contact trace reparameterised by 3D distance, then smoothed in east, north and up by cubic
-    smoothing splines. Horizontal and vertical use separate parameters: each is the strongest that keeps its
-    p95 departure from the trace under its bound. Capture weave is a 0.75-3 m wavelength; replaying it at
-    riding speed would be visible and nauseating, so the bound, not the raw trace, sets the limit."""
+    smoothing splines. Vertical keeps a 3 cm p95 bound. Horizontal starts from the old 10 cm registration
+    fit, then locally reduces spline weights around comfort violations until yaw acceleration is at most
+    30 deg/s^2 or the 0.5 m lateral departure cap would be exceeded. Real captures include pull-overs and
+    junctions, so the path absorbs those locally rather than over-smoothing the whole route."""
     if len(contacts) < 4:
         raise PathError(f"need at least 4 road contacts to fit a rider path, got {len(contacts)}")
     enu = np.array([frame.from_ecef(c.ecef) for c in contacts])
@@ -279,7 +317,7 @@ def rider_path(
     pulses = np.array([contacts[group[0]].pulse for group in groups])
     bridged = np.array([any(contacts[i].bridged for i in group) for group in groups])
     nominal = np.array([any(contacts[i].nominal for i in group) for group in groups])
-    splines, smoothing = _smooth_to_bound(distance, enu, horizontal_bound_m, vertical_bound_m)
+    splines, smoothing = _smooth_to_bound(distance, enu, vertical_bound_m)
     dense_distance, dense_s, enu_dense, heading, curvature = _sample_path(splines, distance, enu)
     keep = np.concatenate([[True], np.diff(dense_s) > 0])
     dense_distance, dense_s = dense_distance[keep], dense_s[keep]
@@ -324,45 +362,131 @@ def _collapse_stops(distance, enu, sigma):
     return collapsed_d, collapsed_enu, collapsed_sigma, groups
 
 
-def _smooth_to_bound(distance, enu, horizontal_bound_m, vertical_bound_m):
-    def fit_horizontal(parameter):
-        return [UnivariateSpline(distance, enu[:, axis], k=3, s=parameter) for axis in (0, 1)]
+def _smooth_to_bound(distance, enu, vertical_bound_m):
+    def fit_horizontal(parameter, weights=None):
+        return [UnivariateSpline(distance, enu[:, axis], k=3, s=parameter, w=weights) for axis in (0, 1)]
 
     def fit_vertical(parameter):
         return UnivariateSpline(distance, enu[:, 2], k=3, s=parameter)
 
-    def lateral_p95(splines):
+    def lateral(splines):
         fitted = np.column_stack([spline(distance) for spline in splines])
         de = splines[0].derivative()(distance)
         dn = splines[1].derivative()(distance)
         norm = np.hypot(de, dn)
         delta = fitted - enu[:, :2]
-        lateral = np.where(norm > 0, np.abs(delta[:, 0] * dn - delta[:, 1] * de) / norm, np.hypot(*delta.T))
-        return float(np.percentile(lateral, 95))
+        return np.where(norm > 0, np.abs(delta[:, 0] * dn - delta[:, 1] * de) / norm, np.hypot(*delta.T))
+
+    def lateral_p95(splines):
+        return float(np.percentile(lateral(splines), 95))
+
+    def lateral_max(splines):
+        return float(lateral(splines).max())
 
     def vertical_p95(spline):
         return float(np.percentile(np.abs(spline(distance) - enu[:, 2]), 95))
 
-    horizontal, horizontal_s = _largest_accepted(fit_horizontal, lateral_p95, horizontal_bound_m)
+    def max_yaw(horizontal, vertical):
+        _, dense_s, _, _, curvature = _sample_path([horizontal[0], horizontal[1], vertical], distance, enu)
+        yaw = yaw_acceleration(dense_s, curvature)
+        peak = int(np.argmax(yaw))
+        return float(yaw[peak]), float(dense_s[peak])
+
     vertical, vertical_s = _largest_accepted(fit_vertical, vertical_p95, vertical_bound_m)
-    horizontal, horizontal_warnings = _fit_recording_warnings(fit_horizontal, horizontal_s)
     vertical, vertical_warnings = _fit_recording_warnings(fit_vertical, vertical_s)
-    lateral = lateral_p95(horizontal)
-    up = vertical_p95(vertical)
+
+    horizontal, horizontal_s = _largest_accepted(
+        lambda parameter: fit_horizontal(parameter), lateral_p95, HORIZONTAL_INITIAL_P95_M
+    )
+    if lateral_max(horizontal) > HORIZONTAL_MAX_DEPARTURE_M:
+        horizontal, horizontal_s = _largest_accepted(
+            lambda parameter: fit_horizontal(parameter), lateral_max, HORIZONTAL_MAX_DEPARTURE_M
+        )
+
+    base_s = horizontal_s
+    weights = np.ones(len(distance))
+    best = horizontal
+    best_weights = weights
+    best_s = base_s
+    best_yaw, _ = max_yaw(horizontal, vertical)
+    comfort_met = best_yaw <= COMFORT_YAW_ACCEL_LIMIT_DEG_S2
+    iterations = 0
+    while not comfort_met and iterations < MAX_COMFORT_ITERATIONS:
+        iterations += 1
+        dense_distance, dense_s, _, _, curvature = _sample_path([best[0], best[1], vertical], distance, enu)
+        yaw = yaw_acceleration(dense_s, curvature)
+        peak = int(np.argmax(yaw))
+        s_peak = float(dense_s[peak])
+        trace_smoothed = np.interp(distance, dense_distance, dense_s)
+        window = np.abs(trace_smoothed - s_peak) <= COMFORT_WINDOW_M / 2
+        if not window.any():
+            window[int(np.argmin(np.abs(trace_smoothed - s_peak)))] = True
+        candidates = []
+        for multiplier in COMFORT_S_MULTIPLIERS:
+            for weight_factor in COMFORT_WEIGHT_FACTORS:
+                candidate_weights = weights.copy()
+                candidate_weights[window] = np.minimum(candidate_weights[window], weight_factor)
+                candidate_s = base_s * multiplier
+                candidate = fit_horizontal(candidate_s, candidate_weights)
+                candidate_lateral = lateral_max(candidate)
+                if candidate_lateral > HORIZONTAL_MAX_DEPARTURE_M:
+                    continue
+                candidate_yaw, _ = max_yaw(candidate, vertical)
+                candidates.append(
+                    (
+                        candidate_yaw,
+                        candidate_lateral,
+                        candidate_s,
+                        candidate_weights,
+                        candidate,
+                    )
+                )
+        if not candidates:
+            break
+        meeting = [item for item in candidates if item[0] <= COMFORT_YAW_ACCEL_LIMIT_DEG_S2]
+        if meeting:
+            chosen = min(meeting, key=lambda item: (item[1], item[0], item[2]))
+            best, best_weights, best_s = chosen[4], chosen[3], chosen[2]
+            best_yaw = chosen[0]
+            comfort_met = True
+            break
+        chosen = min(candidates, key=lambda item: (item[0], item[1]))
+        if chosen[0] >= best_yaw:
+            break
+        best, best_weights, best_s = chosen[4], chosen[3], chosen[2]
+        best_yaw = chosen[0]
+        weights = chosen[3]
+
+    horizontal, horizontal_warnings = _fit_recording_warnings(
+        lambda parameter: fit_horizontal(parameter, best_weights), best_s
+    )
+    lateral_values = lateral(horizontal)
+    final_yaw, final_s_at = max_yaw(horizontal, vertical)
     return [horizontal[0], horizontal[1], vertical], {
         "method": "cubic-smoothing-spline",
         "horizontal": {
-            "parameter_s": float(horizontal_s),
-            "bound_m": float(horizontal_bound_m),
-            "p95_lateral_m": lateral,
+            "objective": "comfort",
+            "initial_p95_target_m": HORIZONTAL_INITIAL_P95_M,
+            "parameter_s": float(best_s),
+            "max_departure_m": HORIZONTAL_MAX_DEPARTURE_M,
+            "p95_lateral_m": float(np.percentile(lateral_values, 95)),
+            "max_lateral_m": float(lateral_values.max()),
+            "comfort_limit_deg_s2": COMFORT_YAW_ACCEL_LIMIT_DEG_S2,
+            "comfort_met": bool(final_yaw <= COMFORT_YAW_ACCEL_LIMIT_DEG_S2),
+            "max_yaw_accel_deg_s2": final_yaw,
+            "s_at_max_yaw_m": final_s_at,
+            "window_m": COMFORT_WINDOW_M,
+            "s_multipliers": list(COMFORT_S_MULTIPLIERS),
+            "weight_factors": list(COMFORT_WEIGHT_FACTORS),
+            "iterations": iterations,
         },
         "vertical": {
             "parameter_s": float(vertical_s),
             "bound_m": float(vertical_bound_m),
-            "p95_vertical_m": up,
+            "p95_vertical_m": vertical_p95(vertical),
         },
-        "p95_lateral_m": lateral,
-        "p95_vertical_m": up,
+        "p95_lateral_m": float(np.percentile(lateral_values, 95)),
+        "p95_vertical_m": vertical_p95(vertical),
         "warnings": sorted({*horizontal_warnings, *vertical_warnings}),
         "trace_points": int(len(distance)),
         "min_trace_spacing_m": MIN_TRACE_SPACING_M,

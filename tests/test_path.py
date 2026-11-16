@@ -318,13 +318,14 @@ def test_a_circle_gives_constant_heading_rate_and_curvature():
     assert np.all(np.sign(path.curvature_1pm[middle]) > 0)
 
 
-def test_the_strongest_smoothing_under_the_registration_bound_removes_capture_weave():
+def test_comfort_first_horizontal_smoothing_removes_capture_weave():
     x = np.arange(0.0, 50.0, 0.2)
     weave = 0.03 * np.sin(2 * np.pi * x / 2.0)
     path = rider_path(straight_contacts(x, n=weave), FRAME)
 
-    assert path.smoothing["p95_lateral_m"] <= 0.10
-    assert path.smoothing["horizontal"]["bound_m"] == 0.10
+    assert path.smoothing["horizontal"]["objective"] == "comfort"
+    assert path.smoothing["horizontal"]["comfort_met"] is True
+    assert path.smoothing["horizontal"]["max_lateral_m"] <= 0.50
     assert path.smoothing["vertical"]["bound_m"] == 0.03
     enu, heading, _, _ = path.at(path.s_m)
     middle = slice(20, -20)
@@ -497,6 +498,22 @@ def test_profile_heights_are_geodetic_and_the_geoid_is_evaluated_for_every_sampl
     np.testing.assert_allclose(profile.h_ortho_m, height - 50.0, atol=1e-6)
     assert geoid.calls == 1
     assert "OSGM15" not in str(profile.quality)
+
+
+def test_comfort_first_smoothing_absorbs_a_pull_over_locally():
+    x = np.arange(0.0, 120.0, 0.2)
+    pull_over = np.zeros_like(x)
+    mask = (x >= 45.0) & (x <= 55.0)
+    pull_over[mask] = 0.6 * np.sin(np.pi * (x[mask] - 45.0) / 10.0) ** 2
+    path = rider_path(straight_contacts(x, n=pull_over), FRAME)
+
+    smoothing = path.smoothing["horizontal"]
+    assert smoothing["comfort_met"] is True
+    assert smoothing["max_yaw_accel_deg_s2"] <= 30.0
+    assert smoothing["max_lateral_m"] <= 0.5
+    lateral = path.trace_fit_enu_m[:, 1] - path.trace_enu_m[:, 1]
+    away = (x < 30.0) | (x > 70.0)
+    assert np.abs(lateral[away]).max() < 0.02
 
 
 def test_a_height_step_is_smoothed_into_finite_heights_and_grade():
