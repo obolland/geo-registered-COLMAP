@@ -255,3 +255,13 @@ Read-only audit of i-00779ffa487aebde0 (g6.2xlarge, eu-west-2a) via `ops/aws/run
 - Disk: 500 GB root, 72 GB used (about $45/month while stopped); plus a 419 GB local NVMe instance store (fast scratch, wiped on stop). 11 packages upgradable.
 - POC leftovers: ~/outputs (936 MB), ~/exports/splat/splat.ply, ~/keyframes (COLMAP sparse), miniconda3 (14 GB), miniforge3 (21 GB).
 - London g6/g5 capacity was exhausted for about six hours that day; Ireland has a G-family vCPU quota of 0.
+
+## Training instance set up (2026-11-16)
+
+New instance i-04f3833f3a68627d6 (g6.2xlarge, eu-west-2a, 150 GB gp3, tag Project=georoute) from "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20261113" (ami-0c2426dd9dd8f67e7), set up by `ops/aws/setup-gpu.sh` (output: `research/aws-setup-2026-11-16-run2.txt`).
+- NVIDIA L4, driver 595.112.07, CUDA 12.9 toolkit; Python 3.12.3 venv at /opt/georoute/venv with torch 2.9.1+cu128; gsplat 1.6.0 from commit 512d366 (JIT-compiled for sm_89, NUM_CHANNELS 1,3,4, 2DGS and 3DGUT off; 205 s); Node 22.23.5; splat-transform 3.11.2. Every job must `source /opt/georoute/env.sh` (changing those build settings makes gsplat recompile from scratch).
+- Smoke test: 100k splats at 1280x720, rasterize plus backward, 9.4 ms (RGB) and 6.0 ms (RGB+ED) per step.
+- 60 GB of 145 GB used (the base AMI ships several CUDA toolkits).
+- First attempt failed: gsplat's default build (23 channel counts, two GPU types) ran past a 75-minute cap. Cost of the day's GPU time about $2.20 (8 + 83 + 14 minutes).
+- `ops/aws/grab-and-run.sh` waits for capacity (London g6 was scarce all day) and runs one job unattended; refusals are free.
+- Pending for Olly: terminate the old instance i-00779ffa487aebde0, deregister ami-07b4055656e0194ff and delete its snapshot.
