@@ -1,5 +1,6 @@
 """Rider path: one rig pose per capture pulse, then the road contact, smoothed path and profile."""
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -58,7 +59,7 @@ def rig_poses(poses, images, rig: Rig, frame: LocalFrame) -> list[RigPose]:
             continue
         origins = np.array([origin for _, _, origin in cameras])
         centre = np.median(origins, axis=0)
-        spread = np.linalg.norm(origins[:, None, :] - origins[None, :, :], axis=2).max()
+        spread = np.linalg.norm(origins - centre, axis=1).max()
         if spread > MAX_CAMERA_DISAGREEMENT_M:
             raise PathError(
                 f"pulse {pulse}: rig cameras disagree by {spread * 100:.1f} cm "
@@ -202,9 +203,11 @@ DENSE_STEP_M = 0.1
 # Contacts closer than this along the trace are a stop: averaging them collapses the stop without inventing
 # motion or a zero-length spline interval.
 MIN_TRACE_SPACING_M = 0.01
-# The smoothed path may not depart from the reconstructed road trace by more than this, laterally or
-# vertically; the strongest smoothing that respects it is used.
-SMOOTHING_BOUND_M = 0.1
+# The smoothed path may not depart from the reconstructed road trace by more than these; the strongest
+# smoothing that respects each bound is used. Horizontal weave is removed up to the registration bound;
+# vertical is tighter because it is only fit noise, not rider motion, and the QA gate is 3 cm.
+HORIZONTAL_SMOOTHING_BOUND_M = 0.10
+VERTICAL_SMOOTHING_BOUND_M = 0.03
 MAX_SMOOTHING_S = 1e12
 
 
@@ -247,10 +250,15 @@ class RiderPath:
         return enu, heading, curvature, sigma
 
 
-def rider_path(contacts, frame: LocalFrame, bound_m: float = SMOOTHING_BOUND_M) -> RiderPath:
+def rider_path(
+    contacts,
+    frame: LocalFrame,
+    horizontal_bound_m: float = HORIZONTAL_SMOOTHING_BOUND_M,
+    vertical_bound_m: float = VERTICAL_SMOOTHING_BOUND_M,
+) -> RiderPath:
     """The road-contact trace reparameterised by 3D distance, then smoothed in east, north and up by cubic
-    smoothing splines. The smoothing is the strongest that keeps the 95th percentile of the lateral and
-    vertical departures from the trace under bound_m. Capture weave is a 0.75-3 m wavelength; replaying it at
+    smoothing splines. Horizontal and vertical use separate parameters: each is the strongest that keeps its
+    p95 departure from the trace under its bound. Capture weave is a 0.75-3 m wavelength; replaying it at
     riding speed would be visible and nauseating, so the bound, not the raw trace, sets the limit."""
     if len(contacts) < 4:
         raise PathError(f"need at least 4 road contacts to fit a rider path, got {len(contacts)}")
@@ -265,7 +273,7 @@ def rider_path(contacts, frame: LocalFrame, bound_m: float = SMOOTHING_BOUND_M) 
     pulses = np.array([contacts[group[0]].pulse for group in groups])
     bridged = np.array([any(contacts[i].bridged for i in group) for group in groups])
     nominal = np.array([any(contacts[i].nominal for i in group) for group in groups])
-    splines, smoothing = _smooth_to_bound(distance, enu, bound_m)
+    splines, smoothing = _smooth_to_bound(distance, enu, horizontal_bound_m, vertical_bound_m)
     dense_distance, dense_s, enu_dense, heading, curvature = _sample_path(splines, distance, enu)
     keep = np.concatenate([[True], np.diff(dense_s) > 0])
     dense_distance, dense_s = dense_distance[keep], dense_s[keep]
@@ -302,59 +310,96 @@ def _collapse_stops(distance, enu, sigma):
     return collapsed_d, collapsed_enu, collapsed_sigma, groups
 
 
-def _smooth_to_bound(distance, enu, bound_m):
-    def fit(parameter):
-        return [UnivariateSpline(distance, enu[:, axis], k=3, s=parameter) for axis in range(3)]
+def _smooth_to_bound(distance, enu, horizontal_bound_m, vertical_bound_m):
+    def fit_horizontal(parameter):
+        return [UnivariateSpline(distance, enu[:, axis], k=3, s=parameter) for axis in (0, 1)]
 
-    def deviations(splines):
+    def fit_vertical(parameter):
+        return UnivariateSpline(distance, enu[:, 2], k=3, s=parameter)
+
+    def lateral_p95(splines):
         fitted = np.column_stack([spline(distance) for spline in splines])
         de = splines[0].derivative()(distance)
         dn = splines[1].derivative()(distance)
         norm = np.hypot(de, dn)
-        delta = fitted[:, :2] - enu[:, :2]
+        delta = fitted - enu[:, :2]
         lateral = np.where(norm > 0, np.abs(delta[:, 0] * dn - delta[:, 1] * de) / norm, np.hypot(*delta.T))
-        vertical = np.abs(fitted[:, 2] - enu[:, 2])
-        return float(np.percentile(lateral, 95)), float(np.percentile(vertical, 95))
+        return float(np.percentile(lateral, 95))
+
+    def vertical_p95(spline):
+        return float(np.percentile(np.abs(spline(distance) - enu[:, 2]), 95))
+
+    horizontal, horizontal_s = _largest_accepted(fit_horizontal, lateral_p95, horizontal_bound_m)
+    vertical, vertical_s = _largest_accepted(fit_vertical, vertical_p95, vertical_bound_m)
+    horizontal, horizontal_warnings = _fit_recording_warnings(fit_horizontal, horizontal_s)
+    vertical, vertical_warnings = _fit_recording_warnings(fit_vertical, vertical_s)
+    lateral = lateral_p95(horizontal)
+    up = vertical_p95(vertical)
+    return [horizontal[0], horizontal[1], vertical], {
+        "method": "cubic-smoothing-spline",
+        "horizontal": {
+            "parameter_s": float(horizontal_s),
+            "bound_m": float(horizontal_bound_m),
+            "p95_lateral_m": lateral,
+        },
+        "vertical": {
+            "parameter_s": float(vertical_s),
+            "bound_m": float(vertical_bound_m),
+            "p95_vertical_m": up,
+        },
+        "p95_lateral_m": lateral,
+        "p95_vertical_m": up,
+        "warnings": sorted({*horizontal_warnings, *vertical_warnings}),
+        "trace_points": int(len(distance)),
+        "min_trace_spacing_m": MIN_TRACE_SPACING_M,
+        "dense_step_m": DENSE_STEP_M,
+    }
+
+
+def _largest_accepted(fit, metric, bound):
+    """Largest smoothing parameter whose p95 metric stays under the bound. FITPACK rejects some very large
+    parameters with ValueError/RuntimeError; those are search failures, not reasons to hide other errors."""
 
     def acceptable(parameter):
         try:
-            splines = fit(parameter)
-            lateral, vertical = deviations(splines)
-        except Exception:
-            return False, None, None, None
-        return lateral <= bound_m and vertical <= bound_m, splines, lateral, vertical
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model = fit(parameter)
+            value = metric(model)
+        except (ValueError, RuntimeError):
+            return False, None, None
+        return value <= bound, model, value
 
-    best = fit(0.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        best = fit(0.0)
     low = 0.0
     high = 1e-3
     for _ in range(60):
-        ok, splines, lateral, vertical = acceptable(high)
+        ok, model, _ = acceptable(high)
         if not ok:
             break
-        best, low = splines, high
+        best, low = model, high
         high *= 4.0
         if high > MAX_SMOOTHING_S:
             break
     for _ in range(50):
         middle = np.sqrt(low * high) if low > 0 else high / 2
-        ok, splines, lateral, vertical = acceptable(middle)
+        ok, model, _ = acceptable(middle)
         if ok:
-            best, low = splines, middle
+            best, low = model, middle
         else:
             high = middle
-        if high / low < 1.01 and low > 0:
+        if low > 0 and high / low < 1.01:
             break
-    lateral, vertical = deviations(best)
-    return best, {
-        "method": "cubic-smoothing-spline",
-        "parameter_s": float(low),
-        "bound_m": float(bound_m),
-        "p95_lateral_m": lateral,
-        "p95_vertical_m": vertical,
-        "trace_points": int(len(distance)),
-        "min_trace_spacing_m": MIN_TRACE_SPACING_M,
-        "dense_step_m": DENSE_STEP_M,
-    }
+    return best, low
+
+
+def _fit_recording_warnings(fit, parameter):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = fit(parameter)
+    return model, [str(warning.message) for warning in caught]
 
 
 def _sample_path(splines, distance, enu):
@@ -456,7 +501,7 @@ def _grade(s_h, height):
         low = np.searchsorted(s_h, x - half, side="left")
         high = np.searchsorted(s_h, x + half, side="right")
         if high - low < 2:
-            raise PathError(f"profile at s={index} has too few samples to measure grade")
+            raise PathError(f"profile at s={s_h[index]:.3f} m has too few samples to measure grade")
         design = np.column_stack([s_h[low:high] - x, np.ones(high - low)])
         slope = np.linalg.lstsq(design, height[low:high] - height[index], rcond=None)[0][0]
         grade[index] = 100.0 * slope

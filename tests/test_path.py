@@ -1,8 +1,10 @@
+import warnings
 from dataclasses import replace
 
 import numpy as np
 import pytest
 
+import georoute.path as path_module
 from georoute.geodesy import LocalFrame, ecef_from_enu_rotation, ecef_to_lla
 from georoute.path import (
     CORRIDOR_M,
@@ -78,10 +80,25 @@ def test_camera_disagreement_over_five_centimetres_refuses_naming_the_pulse():
     world_from_rig = np.eye(3)
     poses = {(5, 0): pose(rig, 0, [100.0, 0.0, 1.2], world_from_rig)}
     rotation, centre = pose(rig, 1, [100.0, 0.0, 1.2], world_from_rig)
-    poses[(5, 1)] = (rotation, centre + np.array([0.0, 0.06, 0.0]))
+    poses[(5, 1)] = (rotation, centre + np.array([0.0, 0.12, 0.0]))
 
     with pytest.raises(PathError, match="pulse 5"):
         rig_poses(poses, make_images([5]), rig, FRAME)
+
+
+def test_camera_disagreement_is_measured_from_the_median_not_pairwise():
+    rig = make_rig(offsets=((0, 0.0), (1, 0.0), (2, 0.06), (3, 0.06)))
+    world_from_rig = np.eye(3)
+    poses = {
+        (5, 0): pose(rig, 0, [100.0, 0.0, 1.2], world_from_rig),
+        (5, 1): pose(rig, 1, [100.0, 0.0, 1.2], world_from_rig),
+        (5, 2): pose(rig, 2, [100.0, 0.06, 1.2], world_from_rig),
+        (5, 3): pose(rig, 3, [100.0, 0.06, 1.2], world_from_rig),
+    }
+
+    result = rig_poses(poses, make_images([5], cameras=(0, 1, 2, 3)), rig, FRAME)
+
+    np.testing.assert_allclose(result[0].origin_ecef, FRAME.to_ecef([100.0, 0.03, 1.2]), atol=1e-9)
 
 
 def test_a_pulse_with_no_registered_camera_is_bridged_in_time_and_flagged():
@@ -306,7 +323,9 @@ def test_the_strongest_smoothing_under_the_registration_bound_removes_capture_we
     weave = 0.03 * np.sin(2 * np.pi * x / 2.0)
     path = rider_path(straight_contacts(x, n=weave), FRAME)
 
-    assert path.smoothing["p95_lateral_m"] <= 0.1
+    assert path.smoothing["p95_lateral_m"] <= 0.10
+    assert path.smoothing["horizontal"]["bound_m"] == 0.10
+    assert path.smoothing["vertical"]["bound_m"] == 0.03
     enu, heading, _, _ = path.at(path.s_m)
     middle = slice(20, -20)
     assert np.ptp(enu[middle, 1]) < 0.5 * np.ptp(weave)
@@ -318,9 +337,33 @@ def test_the_vertical_spline_removes_weave_and_stays_inside_the_bound():
     weave = 0.03 * np.sin(2 * np.pi * x / 2.0)
     path = rider_path(straight_contacts(x, u=weave), FRAME)
 
-    assert path.smoothing["p95_vertical_m"] <= 0.1
+    assert path.smoothing["p95_vertical_m"] <= 0.03
     middle = slice(20, -20)
     assert np.ptp(path.enu_m[middle, 2]) < 0.5 * np.ptp(weave)
+
+
+def test_unexpected_spline_failures_propagate_instead_of_being_swallowed(monkeypatch):
+    class Exploding:
+        def __init__(self, *args, **kwargs):
+            raise MemoryError("spline allocation failed")
+
+    monkeypatch.setattr(path_module, "UnivariateSpline", Exploding)
+
+    with pytest.raises(MemoryError, match="spline allocation failed"):
+        rider_path(straight_contacts(np.arange(0.0, 10.0, 0.5)), FRAME)
+
+
+def test_spline_warnings_are_recorded_in_the_smoothing_parameters(monkeypatch):
+    real = path_module.UnivariateSpline
+
+    def noisy(*args, **kwargs):
+        warnings.warn("fitpack wobble", UserWarning, stacklevel=2)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(path_module, "UnivariateSpline", noisy)
+    path = rider_path(straight_contacts(np.arange(0.0, 10.0, 0.5)), FRAME)
+
+    assert "fitpack wobble" in path.smoothing["warnings"]
 
 
 def test_a_stop_collapses_without_splitting_the_path_or_breaking_the_tangent():
