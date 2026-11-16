@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from georoute.rig import _RIG_FROM_CAMERA_LEVEL, Rig
+from georoute.rig import _RIG_FROM_CAMERA_LEVEL, _TYPE_KEYS, RIG_SCHEMA, Rig
 
 # A calibrated angle this far from the hand measurement points to a mix-up, not a measuring error.
 MAX_DISAGREEMENT_DEG = 15.0
@@ -94,12 +94,15 @@ def write_calibrated_rig(
         f"{axial_offset_m * 1000:.0f} mm",
         "# behind the lens front to the optical centre. hand_* keys are the original measurements.",
         "",
-        f'schema = "{doc["schema"]}"',
+        f'schema = "{RIG_SCHEMA}"',
         f"name = {_toml_value(doc['name'].removesuffix('-calibrated') + '-calibrated')}",
         f"measured = {str(doc['measured']).lower()}",
+        f"reference_camera = {reference}",
         "",
     ]
-    for table in ("reference", "antenna", "timing"):
+    for table in ("reference", "antenna", "timing", "camera_defaults"):
+        if table not in doc:
+            continue
         lines.append(f"[{table}]")
         lines += [f"{k} = {_toml_value(v)}" for k, v in doc[table].items()]
         lines.append("")
@@ -116,7 +119,9 @@ def write_calibrated_rig(
         axis = rig_from_camera(*angles)[:, 2]
         position = np.array(cam["position_in_rig_m"]) - axial_offset_m * axis
         lines += ["[[camera]]"] + [
-            f"{k} = {_toml_value(cam[k])}" for k in ("index", "role", "folder", "serial") if k in cam
+            f"{k} = {_toml_value(cam[k])}"
+            for k in ("index", "role", "folder", "serial", *sorted(_TYPE_KEYS))
+            if k in cam
         ]
         lines += [
             f"position_in_rig_m = {_toml_value([round(float(x), 4) for x in position])}",

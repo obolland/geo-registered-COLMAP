@@ -24,12 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
     report.epilog = "exit status: 0 ok, 1 integrity errors, 2 session unreadable"
     match = sub.add_parser("match", help="match each camera's photos to the session's pulses")
     match.add_argument("session_dir", type=Path)
-    match.add_argument("images_root", type=Path, help="folder holding cam0 .. cam3")
+    match.add_argument("images_root", type=Path, help="folder holding the camera folders (cam0, cam1, ...)")
     match.add_argument("--rig", type=Path, help="rig config giving camera folders and body serials")
     match.add_argument(
         "--camera-fault",
         type=int,
-        choices=range(4),
         action="append",
         default=[],
         metavar="N",
@@ -38,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     match.epilog = "exit status: 0 all matched, 1 mismatch or bad rig, 2 session unreadable"
     run = sub.add_parser("ingest", help="time and position every capture photo")
     run.add_argument("session_dir", type=Path)
-    run.add_argument("images_root", type=Path, help="folder holding cam0 .. cam3")
+    run.add_argument("images_root", type=Path, help="folder holding the camera folders (cam0, cam1, ...)")
     run.add_argument(
         "--out", type=Path, required=True, help="output folder for images.json, report.json, track.png"
     )
@@ -46,7 +45,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--camera-fault",
         type=int,
-        choices=range(4),
         action="append",
         default=[],
         metavar="N",
@@ -144,8 +142,16 @@ def _match(args) -> int:
         if report["errors"]:
             raise MatchError("session integrity errors: " + "; ".join(report["errors"]))
         warnings: list[str] = []
-        photos, serials = photo_sources(args.images_root, _rig(args), warnings)
-        matches = match_photos(session, photos, serials, warnings, faulty=set(args.camera_fault))
+        rig = _rig(args)
+        photos, serials = photo_sources(args.images_root, rig, warnings)
+        matches = match_photos(
+            session,
+            photos,
+            serials,
+            warnings,
+            faulty=set(args.camera_fault),
+            camera_types=rig and rig.camera_types,
+        )
     except (MatchError, RigError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1

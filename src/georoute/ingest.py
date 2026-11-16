@@ -137,7 +137,9 @@ def _position_captures(
 ):
     warnings: list[str] = []
     photos, serials = photo_sources(images_root, rig, warnings)
-    matches = match_photos(session, photos, serials, warnings, faulty=camera_faults)
+    matches = match_photos(
+        session, photos, serials, warnings, faulty=camera_faults, camera_types=rig and rig.camera_types
+    )
     captures = [m for m in matches if m.pulse.kind == "capture"]
     if not captures:
         raise IngestError("no capture photos to position")

@@ -1,6 +1,6 @@
 # Plan: hardware-configurable pipeline
 
-Status: proposed 2026-11-16. Requirement (Olly): adding cameras, changing camera type or changing rig must be a config change, not a code change. The rig config (`rigs/*.toml`) already covers layout, folders, serials, positions, angles, antenna, curtain travel and calibration.
+Status: built 2026-11-16 (branch `config`). Requirement (Olly): adding cameras, changing camera type or changing rig must be a config change, not a code change. The rig config (`rigs/*.toml`) already covers layout, folders, serials, positions, angles, antenna, curtain travel and calibration.
 
 ## Changes
 
@@ -27,3 +27,17 @@ Status: proposed 2026-11-16. Requirement (Olly): adding cameras, changing camera
 - Camera-specific delay and exposure limits come from the rig.
 - The reference camera comes from the rig.
 - Field test 2 still ingests and reports identically with the current rig files.
+
+## Rig schema 1.1.0 keys (all optional)
+
+```toml
+reference_camera = 2             # defines the rig axes in calibration; default the lowest-numbered camera
+
+[camera_defaults]                # for every camera; any [[camera]] table may override a key
+colmap_model = "OPENCV"          # COLMAP camera model, for example OPENCV_FISHEYE for a fisheye lens
+shutter_delay_ms = [30.0, 500.0] # plausible shutter lag after the trigger
+max_exposure_s = 30.0
+file_number_wrap = 9999          # last file number before the camera wraps to 0001
+```
+
+A 1.0.0 file using any of these keys refuses, so an old file is never silently reinterpreted.

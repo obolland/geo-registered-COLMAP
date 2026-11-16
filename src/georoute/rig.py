@@ -9,16 +9,28 @@ import hashlib
 import math
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from georoute.session import CAMERA_COUNT
-
-RIG_SCHEMA = "georoute.rig/1.0.0"
+RIG_SCHEMA = "georoute.rig/1.1.0"
+READABLE_SCHEMAS = ("georoute.rig/1.0.0", RIG_SCHEMA)
+_TYPE_KEYS = {"colmap_model", "shutter_delay_ms", "max_exposure_s", "file_number_wrap"}
 _KEYS = {
-    "": {"schema", "name", "measured", "reference", "antenna", "timing", "camera", "calibration"},
+    "": {
+        "schema",
+        "name",
+        "measured",
+        "reference",
+        "antenna",
+        "timing",
+        "camera",
+        "calibration",
+        "camera_defaults",
+        "reference_camera",
+    },
+    "camera_defaults": _TYPE_KEYS,
     "calibration": {"source", "reference", "axial_offset_m"},
     "reference": {"description", "height_above_road_m"},
     "antenna": {"arp_in_rig_m", "phase_centre_offset_m"},
@@ -32,9 +44,39 @@ _KEYS = {
         "yaw_pitch_roll_deg",
         "hand_position_in_rig_m",
         "hand_yaw_pitch_roll_deg",
-    },
+    }
+    | _TYPE_KEYS,
 }
+# Keys a 1.0.0 file can't hold, so an old file with them is a mistake rather than a silent upgrade.
+_NEW_IN_1_1 = {"camera_defaults", "reference_camera"} | _TYPE_KEYS
 _RIG_FROM_CAMERA_LEVEL = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
+
+
+MAX_CAMERAS = 64
+
+
+@dataclass(frozen=True)
+class CameraType:
+    """What the pipeline needs to know about a camera model; the defaults are the Canon EOS 100D."""
+
+    colmap_model: str = "OPENCV"
+    shutter_delay_ms: tuple[float, float] = (30.0, 500.0)
+    max_exposure_s: float = 30.0
+    file_number_wrap: int = 9999
+
+
+COLMAP_MODELS = (
+    "SIMPLE_PINHOLE",
+    "PINHOLE",
+    "SIMPLE_RADIAL",
+    "RADIAL",
+    "OPENCV",
+    "OPENCV_FISHEYE",
+    "FULL_OPENCV",
+    "SIMPLE_RADIAL_FISHEYE",
+    "RADIAL_FISHEYE",
+    "THIN_PRISM_FISHEYE",
+)
 
 
 class RigError(ValueError):
@@ -80,6 +122,11 @@ class Rig:
     reference_height_above_road_m: float
     curtain_travel_s: float
     sha256: str
+    camera_types: dict[int, "CameraType"] = field(default_factory=dict)
+    reference_camera: int = 0
+
+    def camera_type(self, index: int) -> "CameraType":
+        return self.camera_types.get(index, CameraType())
 
     def camera(self, index: int) -> Camera:
         for c in self.cameras:
@@ -107,13 +154,21 @@ def load_rig(path) -> Rig:
         doc = tomllib.loads(raw.decode())
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
         raise RigError(f"can't read rig config {path}: {e}") from e
-    if doc.get("schema") != RIG_SCHEMA:
-        raise RigError(f"{path.name} schema is {doc.get('schema')!r}, expected {RIG_SCHEMA}")
+    if doc.get("schema") not in READABLE_SCHEMAS:
+        raise RigError(f"{path.name} schema is {doc.get('schema')!r}, expected one of {READABLE_SCHEMAS}")
     _check_keys(doc, "")
+    if doc["schema"] == "georoute.rig/1.0.0":
+        newer = sorted(
+            _NEW_IN_1_1 & (set(doc) | {k for c in doc.get("camera", []) if isinstance(c, dict) for k in c})
+        )
+        if newer:
+            raise RigError(f"{path.name} uses {newer[0]}, which needs schema {RIG_SCHEMA}")
     for table in ("reference", "antenna", "timing"):
         if table not in doc:
             raise RigError(f"{path.name} is missing [{table}]")
         _check_keys(doc[table], table)
+    if "camera_defaults" in doc:
+        _check_keys(doc["camera_defaults"], "camera_defaults")
     if "calibration" in doc:
         _check_keys(doc["calibration"], "calibration")
     if not doc.get("camera"):
@@ -130,6 +185,11 @@ def load_rig(path) -> Rig:
     measured = doc.get("measured", False)
     if not isinstance(measured, bool):
         raise RigError(f"measured must be true or false, got {measured!r}")
+    defaults = _camera_type(doc.get("camera_defaults", {}), CameraType(), "camera_defaults")
+    types = {e["index"]: _camera_type(e, defaults, f"camera {e['index']}") for e in doc["camera"]}
+    reference = doc.get("reference_camera", min(c.index for c in cameras))
+    if reference not in {c.index for c in cameras}:
+        raise RigError(f"reference_camera {reference!r} is not one of the rig's cameras")
     unserialled = [c.index for c in cameras if not c.serial]
     if measured and unserialled:
         raise RigError(f"a measured rig needs a serial for every camera; camera {unserialled[0]} has none")
@@ -141,6 +201,8 @@ def load_rig(path) -> Rig:
         reference_height_above_road_m=_number(doc["reference"], "height_above_road_m", "reference", 0.0, 5.0),
         curtain_travel_s=_number(doc["timing"], "curtain_travel_ms", "timing", 0.0, 50.0) / 1000,
         sha256=hashlib.sha256(raw).hexdigest(),
+        camera_types=types,
+        reference_camera=reference,
     )
 
 
@@ -174,8 +236,8 @@ def _vector(table: dict, key: str, where: str, limit: float = 10.0) -> np.ndarra
 
 def _camera(entry: dict) -> Camera:
     index = entry.get("index")
-    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < CAMERA_COUNT:
-        raise RigError(f"camera index {index} is outside 0..{CAMERA_COUNT - 1}")
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < MAX_CAMERAS:
+        raise RigError(f"camera index {index} is outside 0..{MAX_CAMERAS - 1}")
     where = f"camera {index}"
     folder, serial = entry.get("folder", f"cam{index}"), entry.get("serial", "")
     if not isinstance(folder, str) or not folder or Path(folder).name != folder or folder in (".", ".."):
@@ -252,4 +314,29 @@ def refine_priors(
             return RefinedPriors(priors, world_from_camera, iteration, float(change))
     raise RigError(
         f"camera priors did not settle within {max_iterations} iterations (last change {change:.4f} m)"
+    )
+
+
+def _camera_type(table: dict, base: CameraType, where: str) -> CameraType:
+    model = table.get("colmap_model", base.colmap_model)
+    if model not in COLMAP_MODELS:
+        raise RigError(f"{where} colmap_model {model!r} is not one of {COLMAP_MODELS}")
+    delay = table.get("shutter_delay_ms", list(base.shutter_delay_ms))
+    if not (
+        isinstance(delay, list | tuple)
+        and len(delay) == 2
+        and all(_is_number(v) for v in delay)
+        and 0 < delay[0] < delay[1] <= 2000
+    ):
+        raise RigError(f"{where} shutter_delay_ms must be [min, max] within 0-2000 ms, got {delay!r}")
+    wrap = table.get("file_number_wrap", base.file_number_wrap)
+    if not isinstance(wrap, int) or isinstance(wrap, bool) or wrap < 9:
+        raise RigError(f"{where} file_number_wrap must be an integer of at least 9, got {wrap!r}")
+    return CameraType(
+        model,
+        (float(delay[0]), float(delay[1])),
+        _number(table, "max_exposure_s", where, 1e-5, 3600.0)
+        if "max_exposure_s" in table
+        else base.max_exposure_s,
+        wrap,
     )

@@ -6,6 +6,7 @@
 # roll turns the camera clockwise (+) as seen from behind it. All in degrees, applied as yaw, then pitch,
 # then roll (rig z, then x, then y).
 
+# Schema 1.1.0 adds optional camera type settings and a reference camera, see docs/PLAN-CONFIG.md.
 schema = "georoute.rig/1.0.0"
 name = "handlebar-4x100d"
 measured = false

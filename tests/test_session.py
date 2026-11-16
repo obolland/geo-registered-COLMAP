@@ -252,7 +252,7 @@ def test_a_falling_edge_before_the_rising_edge_refuses(session_dir):
         load_session(session_dir)
 
 
-@pytest.mark.parametrize("value", ["-5000", "10000", "600000"])
+@pytest.mark.parametrize("value", ["-5000", "10000", "2500000"])
 def test_implausible_shutter_delays_refuse(session_dir, value):
     edit_csv(session_dir / "pulses.csv", set_cells(3, value, [3]))
     with pytest.raises(SessionError, match="pulses.csv:4 cam0_delay_us"):
@@ -300,4 +300,37 @@ def test_unreadable_files_are_session_errors(session_dir):
         load_session(session_dir)
     (session_dir / "session.json").write_bytes(b"\xff\xfe\x00")
     with pytest.raises(SessionError, match="session.json"):
+        load_session(session_dir)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        ["pulse_n", "kind", "cmd_ticks_us"],
+        [
+            "pulse_n",
+            "kind",
+            "cmd_ticks_us",
+            "cam0_delay_us",
+            "cam2_delay_us",
+            "cam1_delay_us",
+            "cam3_delay_us",
+        ],
+        [
+            "pulse_n",
+            "kind",
+            "cmd_ticks_us",
+            "cam1_delay_us",
+            "cam2_delay_us",
+            "cam3_delay_us",
+            "cam4_delay_us",
+        ],
+    ],
+)
+def test_pulses_header_must_number_cameras_from_cam0_in_order(session_dir, header):
+    def rewrite(rows):
+        return [header] + [r[: len(header)] for r in rows[1:]]
+
+    edit_csv(session_dir / "pulses.csv", rewrite)
+    with pytest.raises(SessionError, match="pulses.csv header"):
         load_session(session_dir)

@@ -37,7 +37,7 @@ def test_the_example_rig_loads_and_is_marked_unmeasured():
         (lambda t: t.replace("georoute.rig/1.0.0", "georoute.rig/2.0.0"), "schema"),
         (lambda t: t.replace("measured = false", "measured = false\nmesured = true"), "mesured"),
         (lambda t: t.replace("[timing]\ncurtain_travel_ms = 0.0\n", ""), "timing"),
-        (lambda t: t.replace("index = 3", "index = 4"), "index 4"),
+        (lambda t: t.replace("index = 3", "index = -1"), "index -1"),
         (lambda t: t.replace("measured = false", 'measured = "false"'), "measured"),
         (lambda t: t.replace("curtain_travel_ms = 0.0", ""), "curtain_travel_ms"),
         (lambda t: t.replace("curtain_travel_ms = 0.0", "curtain_travel_ms = -1.0"), "curtain_travel_ms"),

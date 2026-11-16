@@ -1,9 +1,11 @@
 # Calibrated from /Users/olly/fieldtest2/colmap/s1-gsample: orientations relative to cam2, positions moved 26 mm
 # behind the lens front to the optical centre. hand_* keys are the original measurements.
 
-schema = "georoute.rig/1.0.0"
+schema = "georoute.rig/1.1.0"
 name = "handlebar-4x100d-ft2-calibrated"
 measured = true
+# The front camera defines the rig axes for calibration and the report.
+reference_camera = 2
 
 [reference]
 description = "centre of the antenna base on the bar's top face"

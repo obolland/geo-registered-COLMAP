@@ -6,6 +6,7 @@ in file numbers and pulse intervals that happen to repeat to within the toleranc
 from a correct match."""
 
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -13,7 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from georoute.session import CAMERA_COUNT, Pulse, Session, SessionError
+from georoute.rig import MAX_CAMERAS, CameraType
+from georoute.session import Pulse, Session, SessionError
 
 # EXIF SubSecTime has 10 ms resolution; field test 1 intervals agree with pulse intervals to within 10 ms.
 INTERVAL_TOLERANCE_S = 0.03
@@ -27,8 +29,6 @@ EXIF_TAGS = [
     "FocalLength",
 ]
 NAME_NUMBER = re.compile(r"(\d+)$")
-FILE_NUMBERS_PER_FOLDER = 9999
-MAX_EXPOSURE_S = 30.0
 # A faulty camera's photos must agree with this many pulse intervals before its lost tail is accepted.
 MIN_VERIFIED_INTERVALS = 10
 
@@ -68,11 +68,12 @@ class Match:
 def read_photos(
     images_root, folders: dict[int, str] | None = None, warnings: list[str] | None = None
 ) -> dict[int, list[Photo]]:
-    """Photos per camera from images_root/<folder>; folders default to cam0..cam3, absent ones are skipped."""
+    """Photos per camera from images_root/<folder>; folders default to cam0, cam1 and so on (up to the
+    rig's camera limit), absent ones are skipped."""
     if shutil.which("exiftool") is None:
         raise MatchError("exiftool is not installed")
     root = Path(images_root)
-    folders = folders or {c: f"cam{c}" for c in range(CAMERA_COUNT)}
+    folders = folders or {c: f"cam{c}" for c in range(MAX_CAMERAS)}
     out = {}
     for camera, folder in folders.items():
         if (root / folder).is_dir():
@@ -131,8 +132,8 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
             )
             taken += float(f"0.{subsec}") if subsec else 0.0
             exposure = float(r["ExposureTime"])
-            if not 0 < exposure <= MAX_EXPOSURE_S:
-                raise ValueError(f"exposure {exposure} s is outside 0 to {MAX_EXPOSURE_S} s")
+            if not 0 < exposure < math.inf:
+                raise ValueError(f"exposure {exposure} s is not a positive time")
         except ValueError as e:
             raise MatchError(f"cam{camera}: {path} has unreadable EXIF time or exposure: {e}") from None
         serial = r.get("SerialNumber")
@@ -150,15 +151,15 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
     return photos
 
 
-def order_photos(photos: list[Photo]) -> list[Photo]:
+def order_photos(photos: list[Photo], wrap: int = CameraType.file_number_wrap) -> list[Photo]:
     """Shutter order: Canon FileNumber when every photo has one, else the filename number with the
-    9999 to 0001 rollover unwrapped. The camera clock must agree, and the sequence can't have gaps."""
+    wrap (9999 to 0001 on Canon) unwrapped. The camera clock must agree, and the sequence can't have gaps."""
     if not photos:
         return []
     with_number = [p.file_number is not None for p in photos]
     if any(with_number) and not all(with_number):
         raise MatchError(f"cam{photos[0].camera}: only some photos have a Canon FileNumber")
-    unwrapped = _unwrapped_name_numbers(photos)
+    unwrapped = _unwrapped_name_numbers(photos, wrap)
     key = (lambda p: p.file_number) if all(with_number) else (lambda p: unwrapped[p.path])
     ordered = sorted(photos, key=key)
     for before, after in zip(ordered, ordered[1:], strict=False):
@@ -166,26 +167,29 @@ def order_photos(photos: list[Photo]) -> list[Photo]:
             raise MatchError(
                 f"cam{after.camera}: {after.path} is earlier on the camera clock than {before.path}"
             )
-        if not _consecutive(before, after, unwrapped, all(with_number)):
+        if not _consecutive(before, after, unwrapped, all(with_number), wrap):
             field = "Canon FileNumbers" if all(with_number) else "file numbers"
             raise MatchError(f"cam{after.camera}: {field} jump from {before.name} to {after.name}")
     return ordered
 
 
-def _consecutive(before: Photo, after: Photo, unwrapped: dict[str, int], by_file_number: bool) -> bool:
+def _consecutive(
+    before: Photo, after: Photo, unwrapped: dict[str, int], by_file_number: bool, wrap: int
+) -> bool:
     if not by_file_number:
         return unwrapped[after.path] == unwrapped[before.path] + 1
-    folder, number = divmod(before.file_number, 10000)
-    following = (folder + 1) * 10000 + 1 if number == FILE_NUMBERS_PER_FOLDER else before.file_number + 1
+    # Canon's FileNumber is folder * (wrap + 1) + number, and the folder advances when the number wraps.
+    folder, number = divmod(before.file_number, wrap + 1)
+    following = (folder + 1) * (wrap + 1) + 1 if number == wrap else before.file_number + 1
     return after.file_number == following
 
 
-def _unwrapped_name_numbers(photos: list[Photo]) -> dict[str, int]:
+def _unwrapped_name_numbers(photos: list[Photo], wrap: int) -> dict[str, int]:
     unwrapped, offset, previous = {}, 0, None
     for p in sorted(photos, key=lambda p: p.taken_s):
         number = p.name_number
-        if previous is not None and number < previous - FILE_NUMBERS_PER_FOLDER // 2:
-            offset += FILE_NUMBERS_PER_FOLDER
+        if previous is not None and number < previous - wrap // 2:
+            offset += wrap
         unwrapped[p.path], previous = number + offset, number
     return unwrapped
 
@@ -200,13 +204,29 @@ def match_photos(
     serials: dict[int, str] | None = None,
     warnings: list[str] | None = None,
     faulty: set[int] | frozenset[int] = frozenset(),
+    camera_types: dict[int, CameraType] | None = None,
 ) -> list[Match]:
     """faulty names cameras the operator says malfunctioned this session: such a camera may have no photos
-    at all, or photos missing only after its last verified one. Every other check still applies."""
+    at all, or photos missing only after its last verified one. Every other check still applies.
+    camera_types gives each camera's limits (shutter lag, exposure, file numbering); the default is the
+    100D's."""
     matches, bodies = [], {}
     warnings = warnings if warnings is not None else []
-    for camera in range(CAMERA_COUNT):
+    cameras = range(session.camera_count)
+    for name, given in (
+        ("photos", set(photos)),
+        ("faulty", set(faulty)),
+        ("camera_types", set(camera_types or {})),
+    ):
+        unknown = sorted(given - set(cameras))
+        if unknown:
+            raise MatchError(
+                f"{name} names cam{unknown[0]}, but the session records {session.camera_count} cameras"
+            )
+    for camera in cameras:
+        kind = (camera_types or {}).get(camera, CameraType())
         pulses = [p for p in session.pulses if p.delays_us[camera] is not None]
+        _check_delays(camera, pulses, kind)
         if not photos.get(camera):
             if pulses and camera in faulty:
                 warnings.append(
@@ -216,8 +236,9 @@ def match_photos(
                 raise MatchError(f"cam{camera}: no photo folder, but {len(pulses)} pulses have its sync edge")
             continue
         summary = f"cam{camera}: {len(photos[camera])} photos for {len(pulses)} pulses"
+        _check_exposures(camera, photos[camera], kind)
         try:
-            ordered = order_photos(photos[camera])
+            ordered = order_photos(photos[camera], kind.file_number_wrap)
         except MatchError as e:
             raise MatchError(f"{summary}; {str(e).removeprefix(f'cam{camera}: ')}") from None
         _check_alignment(session, camera, ordered, pulses, summary, allow_lost_tail=camera in faulty)
@@ -237,6 +258,26 @@ def match_photos(
             )
         matches += [Match(photo, pulse) for photo, pulse in zip(ordered, pulses, strict=True)]
     return sorted(matches, key=lambda m: (m.pulse.n, m.photo.camera))
+
+
+def _check_delays(camera: int, pulses: list[Pulse], kind: CameraType):
+    low, high = kind.shutter_delay_ms
+    for p in pulses:
+        delay_ms = p.delays_us[camera] / 1000
+        if not low <= delay_ms <= high:
+            raise MatchError(
+                f"cam{camera}: pulse {p.n} shutter delay {delay_ms:g} ms is outside its camera type's "
+                f"{low:g} to {high:g} ms"
+            )
+
+
+def _check_exposures(camera: int, photos: list[Photo], kind: CameraType):
+    for p in photos:
+        if p.exposure_s > kind.max_exposure_s:
+            raise MatchError(
+                f"cam{camera}: {p.path} exposure {p.exposure_s:g} s is over its camera type's "
+                f"{kind.max_exposure_s:g} s"
+            )
 
 
 def _check_body(camera: int, photos: list[Photo], expected: str | None, bodies: dict[str, int]):
