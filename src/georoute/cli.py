@@ -351,11 +351,7 @@ def _colmap_report(args) -> int:
 
 
 def _route_build(args) -> int:
-    from georoute.build import BuildError, build_route
-    from georoute.geoid import GeoidError
-    from georoute.package import PackageError
-    from georoute.path import PathError
-    from georoute.qa import QAError
+    from georoute.build import build_route
 
     try:
         print(f"building route {args.route_id} ...", flush=True)
@@ -367,17 +363,9 @@ def _route_build(args) -> int:
             args.route_id,
             segment_length_m=args.segment_length,
         )
-    except (
-        BuildError,
-        GeoidError,
-        PackageError,
-        PathError,
-        QAError,
-        RigError,
-        OSError,
-        KeyError,
-        ValueError,
-    ) as e:
+    except Exception as e:
+        # A build command should name the failure rather than dump a traceback, including for pycolmap and
+        # filesystem errors. KeyboardInterrupt and SystemExit are BaseException and still pass through.
         print(f"ERROR {e}", file=sys.stderr)
         return 2
     for segment in summary["recapture"]:

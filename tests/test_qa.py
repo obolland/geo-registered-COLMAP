@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from test_path import FRAME, profile_for
 
+from georoute import qa
 from georoute.package import cut_segments
 from georoute.qa import (
     RTK_GAP_LIMIT_M,
@@ -162,3 +163,18 @@ def test_the_qa_summary_is_small_enough_for_the_route_manifest():
         "recapture": [],
         "segments": {"seg_0000": "pass"},
     }
+
+
+def test_a_plot_failure_still_writes_the_qa_report(tmp_path, monkeypatch):
+    path, profile, route = clean_route()
+    report = assess(path, profile, route, {"failures": []}, "route", "build")
+
+    def no_plots(*args):
+        raise RuntimeError("matplotlib unavailable")
+
+    monkeypatch.setattr(qa, "write_plots", no_plots)
+    folder = write_qa(tmp_path, report, path, profile)
+
+    document = json.loads((folder / "report.json").read_text())
+    assert document["status"] == "pass"
+    assert document["plots"] == {"error": "matplotlib unavailable"}

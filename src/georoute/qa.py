@@ -2,7 +2,7 @@
 when a gate fails, and the review plots. Runtime QA (frame time, LOD popping, re-base hitches) is separate."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -74,6 +74,7 @@ class QAReport:
     registration: dict
     segments: tuple[SegmentQA, ...]
     plots: dict
+    checks: dict = field(default_factory=dict)
 
     @property
     def status(self) -> str:
@@ -115,6 +116,7 @@ class QAReport:
             "recapture": self.recapture,
             "status": self.status,
             "plots": self.plots,
+            "checks": self.checks,
         }
 
 
@@ -126,6 +128,7 @@ def assess(
     route_id: str,
     build_id: str,
     generated_utc: str | None = None,
+    checks: dict | None = None,
 ) -> QAReport:
     """Runs the offline gates over the global path and profile, then assigns the results to segments. The
     global arrays are used so a gate can't be introduced by slicing at a boundary."""
@@ -149,6 +152,7 @@ def assess(
         {"source": "colmap report", "failures": failures, "pass": not failures},
         tuple(segments),
         {},
+        checks or {},
     )
 
 
@@ -299,7 +303,10 @@ def write_qa(
     folder.mkdir(parents=True, exist_ok=True)
     plots = {}
     if path is not None and profile is not None:
-        plots = write_plots(folder, path, profile)
+        try:
+            plots = write_plots(folder, path, profile)
+        except Exception as e:
+            plots = {"error": str(e)}
     report = QAReport(
         report.route_id,
         report.build_id,
@@ -307,6 +314,7 @@ def write_qa(
         report.registration,
         report.segments,
         plots,
+        report.checks,
     )
     (folder / "report.json").write_text(json.dumps(report.document(), indent=1, allow_nan=False) + "\n")
     return folder
