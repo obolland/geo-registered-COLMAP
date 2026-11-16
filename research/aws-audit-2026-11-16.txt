@@ -1,0 +1,201 @@
+
+=== machine ===
+$ cat /etc/os-release | head -n 4; uname -r; nproc; free -g | head -n 2; uptime
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.3 LTS (Noble Numbat)"
+6.14.0-1016-aws
+8
+               total        used        free      shared  buff/cache   available
+Mem:              30           1          28           0           0          29
+ 18:01:22 up 0 min,  0 user,  load average: 0.72, 0.15, 0.05
+[exit 0]
+$ curl -s -m 2 -H "X-aws-ec2-metadata-token: $(curl -s -m 2 -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")" http://169.254.169.254/latest/meta-data/ami-id; echo
+ami-07fc210e342568870
+[exit 0]
+$ cat /etc/motd 2>/dev/null | grep -i -m 3 "deep learning\|AMI"; ls /opt 2>/dev/null
+amazon
+aws
+containerd
+dlami
+nvidia
+pytorch
+[exit 0]
+
+=== disk ===
+$ lsblk -o NAME,SIZE,TYPE,MOUNTPOINT; df -h / /home /opt 2>/dev/null | sort -u
+NAME                   SIZE TYPE MOUNTPOINT
+loop0                 27.8M loop /snap/amazon-ssm-agent/12322
+loop1                 27.6M loop /snap/amazon-ssm-agent/11797
+loop2                   74M loop /snap/core22/2163
+loop3                   74M loop /snap/core22/2193
+loop4                 50.8M loop /snap/snapd/25202
+loop5                 50.9M loop /snap/snapd/25577
+nvme0n1                500G disk 
+├─nvme0n1p1            499G part /
+├─nvme0n1p14             4M part 
+├─nvme0n1p15           106M part /boot/efi
+└─nvme0n1p16           913M part /boot
+nvme1n1              419.1G disk 
+└─vg.01-lv_ephemeral 419.1G lvm  
+/dev/root       484G   72G  412G  15% /
+Filesystem      Size  Used Avail Use% Mounted on
+[exit 0]
+$ du -xsh /home/ubuntu/* /home/ubuntu/.cache /home/ubuntu/.conda /opt/conda 2>/dev/null | sort -h | tail -n 15
+20K	/home/ubuntu/OSSNvidiaDriver_v580.95.05_license.txt
+36K	/home/ubuntu/.conda
+44K	/home/ubuntu/BUILD_FROM_SOURCE_PACKAGES_LICENCES
+116K	/home/ubuntu/LINUX_PACKAGES_LIST
+176K	/home/ubuntu/nvidia-acknowledgements
+1.7M	/home/ubuntu/PYTHON_PACKAGES_LICENSES
+8.9M	/home/ubuntu/LINUX_PACKAGES_LICENSES
+82M	/home/ubuntu/Miniforge.sh
+146M	/home/ubuntu/exports
+150M	/home/ubuntu/Miniconda3-latest-Linux-x86_64.sh
+425M	/home/ubuntu/keyframes
+936M	/home/ubuntu/outputs
+6.1G	/home/ubuntu/.cache
+14G	/home/ubuntu/miniconda3
+21G	/home/ubuntu/miniforge3
+[exit 0]
+
+=== gpu and cuda ===
+$ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv; nvidia-smi | grep -m 1 "CUDA Version"
+name, memory.total [MiB], driver_version
+NVIDIA L4, 23034 MiB, 580.95.05
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
+[exit 0]
+$ ls -d /usr/local/cuda* 2>/dev/null; readlink -f /usr/local/cuda; /usr/local/cuda/bin/nvcc --version | tail -n 2
+/usr/local/cuda
+/usr/local/cuda-12.9
+/usr/local/cuda-12.9
+Cuda compilation tools, release 12.9, V12.9.86
+Build cuda_12.9.r12.9/compiler.36037853_0
+[exit 0]
+$ gcc --version | head -n 1
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+[exit 0]
+
+=== python environments ===
+$ as_user 'which -a python python3; python3 --version; conda env list 2>/dev/null; ls /home/ubuntu/*/bin/activate /home/ubuntu/.venv*/bin/activate 2>/dev/null'
+/usr/bin/python3
+/bin/python3
+Python 3.12.3
+/home/ubuntu/miniconda3/bin/activate
+/home/ubuntu/miniforge3/bin/activate
+[exit 2]
+$ as_user 'for p in $(ls -d /opt/*/bin/python /opt/conda/envs/*/bin/python /home/ubuntu/*/bin/python /home/ubuntu/.venv*/bin/python /home/ubuntu/miniconda3/envs/*/bin/python /home/ubuntu/anaconda3/envs/*/bin/python 2>/dev/null; command -v python3); do echo "## $p"; $p -m pip list 2>/dev/null | grep -i -E "^(torch|torchvision|gsplat|nerfstudio|numpy|pycolmap|plyfile|tyro|fused|tiny-cuda|opencv-python|imageio|lpips|torchmetrics) "; done'
+## /home/ubuntu/miniconda3/bin/python
+numpy                    2.3.4
+torch                    2.9.0
+torchvision              0.24.0
+## /home/ubuntu/miniforge3/bin/python
+## /opt/pytorch/bin/python
+imageio                   2.37.0
+numpy                     1.26.4
+torch                     2.8.0+cu129
+torchvision               0.23.0+cu129
+## /usr/bin/python3
+[exit 1]
+
+=== torch and gsplat smoke test (each python that has torch) ===
+$ as_user 'for p in $(ls -d /opt/*/bin/python /opt/conda/envs/*/bin/python /home/ubuntu/*/bin/python /home/ubuntu/.venv*/bin/python /home/ubuntu/miniconda3/envs/*/bin/python /home/ubuntu/anaconda3/envs/*/bin/python 2>/dev/null; command -v python3); do if $p -c "import torch" 2>/dev/null; then echo "## $p"; $p /tmp/georoute_gsplat_smoke.py 2>&1 | tail -n 8; fi; done'
+## /home/ubuntu/miniconda3/bin/python
+torch 2.9.0+cu128 built for cuda 12.8 available True
+device NVIDIA L4 capability (8, 9)
+matmul ok True
+Traceback (most recent call last):
+  File "/tmp/georoute_gsplat_smoke.py", line 5, in <module>
+    import gsplat
+ModuleNotFoundError: No module named 'gsplat'
+## /opt/pytorch/bin/python
+  import pynvml  # type: ignore[import]
+torch 2.8.0+cu129 built for cuda 12.9 available True
+device NVIDIA L4 capability (8, 9)
+matmul ok True
+Traceback (most recent call last):
+  File "/tmp/georoute_gsplat_smoke.py", line 5, in <module>
+    import gsplat
+ModuleNotFoundError: No module named 'gsplat'
+[exit 0]
+
+=== other tools ===
+$ as_user 'node --version; npm --version; npm ls -g --depth=0 2>/dev/null | tail -n +2; command -v splat-transform && splat-transform --version'
+bash: line 1: node: command not found
+bash: line 1: npm: command not found
+[exit 1]
+$ as_user 'colmap -h 2>/dev/null | head -n 2; command -v ns-train; aws --version'
+COLMAP 3.9.1 -- Structure-from-Motion and Multi-View Stereo
+(Commit Unknown on Unknown without CUDA)
+aws-cli/2.31.27 Python/3.13.9 Linux/6.14.0-1016-aws exe/x86_64.ubuntu.24
+[exit 0]
+$ snap list amazon-ssm-agent 2>/dev/null | tail -n 1; amazon-ssm-agent --version 2>/dev/null
+amazon-ssm-agent  3.3.3050.0  12322  latest/stable/…  aws**      classic
+[exit 127]
+
+=== leftovers from earlier work ===
+$ ls -la /home/ubuntu | head -n 40
+total 247400
+drwxr-xr-x 18 ubuntu ubuntu      4096 Dec 29  2025 .
+drwxr-xr-x  3 root   root        4096 Nov  1  2025 ..
+-rw-------  1 ubuntu ubuntu      9947 Dec 29  2025 .bash_history
+-rw-r--r--  1 ubuntu ubuntu       220 Mar 31  2024 .bash_logout
+-rw-rw-r--  1 ubuntu ubuntu      4781 Dec  5  2025 .bashrc
+drwx------  9 ubuntu ubuntu      4096 Nov 14  2025 .cache
+drwxrwxr-x  3 ubuntu ubuntu      4096 Nov  9  2025 .conda
+drwxrwxr-x  3 ubuntu ubuntu      4096 Nov  9  2025 .config
+drwx------  3 ubuntu ubuntu      4096 Nov  1  2025 .gnupg
+drwxrwxr-x  3 ubuntu ubuntu      4096 Nov  1  2025 .jupyter
+drwxrwxr-x  3 ubuntu ubuntu      4096 Dec  5  2025 .local
+drwxrwxr-x  3 ubuntu ubuntu      4096 Dec  5  2025 .mamba
+drwx------  3 ubuntu ubuntu      4096 Nov  9  2025 .nv
+-rw-r--r--  1 ubuntu ubuntu       807 Mar 31  2024 .profile
+drwx------  2 ubuntu ubuntu      4096 Nov  9  2025 .ssh
+-rw-r--r--  1 ubuntu ubuntu         0 Nov  1  2025 .sudo_as_admin_successful
+drwxrwxr-x  3 ubuntu ubuntu      4096 Nov  9  2025 .triton
+-rw-rw-r--  1 ubuntu ubuntu       204 Dec  5  2025 .wget-hsts
+-rw-r--r--  1 ubuntu ubuntu     43587 Nov  1  2025 BUILD_FROM_SOURCE_PACKAGES_LICENCES
+-rw-rw-r--  1 ubuntu ubuntu   9224755 Nov  1  2025 LINUX_PACKAGES_LICENSES
+-rw-rw-r--  1 ubuntu ubuntu    114819 Nov  1  2025 LINUX_PACKAGES_LIST
+-rw-rw-r--  1 ubuntu ubuntu 156323998 Oct 27  2025 Miniconda3-latest-Linux-x86_64.sh
+-rw-rw-r--  1 ubuntu ubuntu  85771392 Dec  5  2025 Miniforge.sh
+-rw-rw-r--  1 ubuntu ubuntu     19711 Nov  1  2025 OSSNvidiaDriver_v580.95.05_license.txt
+-rw-rw-r--  1 ubuntu ubuntu   1703895 Nov  1  2025 PYTHON_PACKAGES_LICENSES
+-rw-rw-r--  1 ubuntu ubuntu       316 Nov  1  2025 THIRD_PARTY_SOURCE_CODE_URLS
+drwxrwxr-x  3 ubuntu ubuntu      4096 Dec 29  2025 exports
+drwxr-xr-x  4 ubuntu ubuntu      4096 Dec 29  2025 keyframes
+drwxrwxr-x 17 ubuntu ubuntu      4096 Nov  9  2025 miniconda3
+drwxrwxr-x 18 ubuntu ubuntu      4096 Dec  5  2025 miniforge3
+drwxrwxr-x  2 ubuntu ubuntu      4096 Nov  1  2025 nvidia-acknowledgements
+drwxrwxr-x  3 ubuntu ubuntu      4096 Dec 29  2025 outputs
+[exit 0]
+$ find /home/ubuntu -maxdepth 3 \( -name 'outputs' -o -name '*.ply' -o -name 'transforms.json' -o -name 'sparse' \) 2>/dev/null | head -n 20
+/home/ubuntu/keyframes/colmap/sparse
+/home/ubuntu/exports/splat/splat.ply
+/home/ubuntu/outputs
+[exit 0]
+
+=== housekeeping ===
+$ crontab -l 2>/dev/null; ls /etc/cron.d; systemctl list-timers --no-pager | head -n 12
+e2scrub_all
+sysstat
+NEXT                            LEFT LAST                             PASSED UNIT                           ACTIVATES
+Mon 2026-11-16 18:06:13 UTC 3min 53s -                                     - update-notifier-download.timer update-notifier-download.service
+Mon 2026-11-16 18:10:00 UTC     7min -                                     - sysstat-collect.timer          sysstat-collect.service
+Mon 2026-11-16 18:16:11 UTC    13min -                                     - systemd-tmpfiles-clean.timer   systemd-tmpfiles-clean.service
+Mon 2026-11-16 18:16:31 UTC    14min Mon 2025-12-08 21:08:54 UTC           - fwupd-refresh.timer            fwupd-refresh.service
+Mon 2026-11-16 18:47:31 UTC    45min Mon 2025-12-08 14:44:43 UTC           - apt-daily-upgrade.timer        apt-daily-upgrade.service
+Mon 2026-11-16 19:08:00 UTC  1h 5min Mon 2025-12-08 15:33:08 UTC           - fstrim.timer                   fstrim.service
+Mon 2026-11-16 19:48:48 UTC 1h 46min Fri 2025-12-05 18:24:47 UTC           - man-db.timer                   man-db.service
+Mon 2026-11-16 22:01:42 UTC 3h 59min Fri 2025-12-05 15:25:02 UTC           - motd-news.timer                motd-news.service
+Tue 2026-11-17 00:00:00 UTC 5h 57min Mon 2026-11-16 18:01:17 UTC 1min 1s ago dpkg-db-backup.timer           dpkg-db-backup.service
+Tue 2026-11-17 00:00:00 UTC 5h 57min Mon 2026-11-16 18:01:17 UTC 1min 1s ago logrotate.timer                logrotate.service
+Tue 2026-11-17 00:07:00 UTC       6h -                                     - sysstat-summary.timer          sysstat-summary.service
+[exit 0]
+$ apt list --upgradable 2>/dev/null | wc -l
+11
+[exit 0]
+
+audit finished 2026-11-16T18:02:20Z
+

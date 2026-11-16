@@ -245,3 +245,13 @@ Merged with both field test 2 segments failing the comfort gate, because the gat
 - Treat genuine bends (the junction) as app bend-speed policy: report the slowest speed the geometry forces (speed profile limited by yaw acceleration too) and gate on that, rather than demanding the geometry be smoothed away.
 - Measure the 30 deg/s^2 yaw-acceleration limit and the 3 m/s^2 lateral limit on the headset.
 - Explain the 274 m and 420 m kinks (no known cause yet).
+
+## GPU instance audit (2026-11-16)
+
+Read-only audit of i-00779ffa487aebde0 (g6.2xlarge, eu-west-2a) via `ops/aws/run-on-gpu.sh` after `ops/aws/grab-and-run.sh` caught capacity at 18:01 (8 billed minutes). Raw output: `research/aws-audit-2026-11-16.txt`.
+- AWS Deep Learning AMI (PyTorch), Ubuntu 24.04, kernel 6.14; NVIDIA L4 23 GB, driver 580.95 (CUDA 13.0 capable), nvcc 12.9, gcc 13.3.
+- Python: `/opt/pytorch` venv torch 2.8.0+cu129 and `~/miniconda3` base torch 2.9.0+cu128 both run on the GPU. gsplat is not installed in any env scanned. `~/miniforge3` (21 GB) envs were not scanned (audit glob gap); likely the old POC environment.
+- No Node or splat-transform. COLMAP 3.9.1 without CUDA (not needed: COLMAP runs on the Mac).
+- Disk: 500 GB root, 72 GB used (about $45/month while stopped); plus a 419 GB local NVMe instance store (fast scratch, wiped on stop). 11 packages upgradable.
+- POC leftovers: ~/outputs (936 MB), ~/exports/splat/splat.ply, ~/keyframes (COLMAP sparse), miniconda3 (14 GB), miniforge3 (21 GB).
+- London g6/g5 capacity was exhausted for about six hours that day; Ireland has a G-family vCPU quota of 0.
