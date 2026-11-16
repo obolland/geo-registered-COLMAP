@@ -3,14 +3,27 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.optimize import least_squares
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation, Slerp
 
-from georoute.geodesy import LocalFrame
+from georoute.geodesy import LocalFrame, ecef_from_enu_rotation, ecef_to_lla
 from georoute.rig import Rig
 
 # The calibrated rig predicts each camera's position from the others; a pulse where they disagree by more than
 # this is a bad reconstruction, not rider motion.
 MAX_CAMERA_DISAGREEMENT_M = 0.05
+# The road plane under the rig is fitted to the reconstruction's points. A 2 m disc has at least 72 road
+# points at every pulse of field test 2; below 20 there are too few to fit a plane, so the nominal rig
+# height is used instead.
+CONTACT_RADIUS_M = 2.0
+CONTACT_HEIGHT_WINDOW_M = 0.3
+MIN_CONTACT_POINTS = 20
+# Used when the surface can't be fitted. The rig's 1.18 m was measured by hand to about a centimetre; the rest
+# covers the road surface varying under the reference point.
+NOMINAL_SURFACE_SIGMA_M = 0.05
+# SfM road points scatter by a few centimetres; the robust loss treats larger departures as kerbs and clutter.
+ROBUST_SCALE_M = 0.02
 
 
 class PathError(ValueError):
@@ -77,6 +90,98 @@ def rig_poses(poses, images, rig: Rig, frame: LocalFrame) -> list[RigPose]:
             cameras = ()
             bridged = True
         result.append(RigPose(pulse, float(t), frame.to_ecef(centre), rotation, cameras, bridged))
+    return result
+
+
+@dataclass(frozen=True)
+class RoadContact:
+    """Where the rig reference point meets the reconstructed road, and how well the surface fitted."""
+
+    pulse: int
+    t_gps_s: float
+    ecef: np.ndarray
+    sigma_m: float
+    height_above_road_m: float
+    points: int
+    nominal: bool
+
+
+def road_contacts(poses, points, rig: Rig, frame: LocalFrame) -> list[RoadContact]:
+    """The road contact under each rig pose, in the session frame. A robust plane is fitted to the SfM points
+    in a disc around the rig, within a height window around the nominal road height, and the rig origin is
+    dropped along the local geodetic normal onto it. Sparse discs use the nominal rig height and are flagged;
+    the geodetic normal, not the frame's up axis, keeps the contact under the rig over a long build."""
+    points = np.asarray(points, float)
+    tree = cKDTree(points[:, :2])
+    contacts = []
+    for pose in poses:
+        origin = frame.from_ecef(pose.origin_ecef)
+        lat, lon, _ = ecef_to_lla(pose.origin_ecef)
+        up = ecef_from_enu_rotation(lat, lon)[:, 2] @ frame.ecef_from_enu
+        up /= np.linalg.norm(up)
+        expected = origin[2] - rig.reference_height_above_road_m
+        near = np.array(tree.query_ball_point(origin[:2], CONTACT_RADIUS_M + 1e-9), dtype=int)
+        near = near[np.abs(points[near, 2] - expected) <= CONTACT_HEIGHT_WINDOW_M]
+        if len(near) < MIN_CONTACT_POINTS:
+            contact = origin - up * rig.reference_height_above_road_m
+            sigma = NOMINAL_SURFACE_SIGMA_M
+            height = rig.reference_height_above_road_m
+            nominal = True
+        else:
+            contact, height, sigma = _fit_contact(points[near], origin, up, pose.pulse)
+            nominal = False
+        contacts.append(
+            RoadContact(pose.pulse, pose.t_gps_s, frame.to_ecef(contact), sigma, height, len(near), nominal)
+        )
+    return contacts
+
+
+def _fit_contact(points, origin, up, pulse: int):
+    """Robust plane z = a de + b dn + c around the origin, then the intersection with the geodetic normal.
+    The prediction variance at that intersection is the contact's 1-sigma."""
+    offset = points[:, :2] - origin[:2]
+    design = np.column_stack([offset, np.ones(len(points))])
+    heights = points[:, 2]
+    start = np.linalg.lstsq(design, heights, rcond=None)[0]
+    fit = least_squares(
+        lambda p: design @ p - heights, start, loss="soft_l1", f_scale=ROBUST_SCALE_M, max_nfev=200
+    )
+    coefficients = fit.x
+    normal = np.array([-coefficients[0], -coefficients[1], 1.0])
+    normal /= np.linalg.norm(normal)
+    denominator = normal @ up
+    if abs(denominator) < 1e-6:
+        raise PathError(f"pulse {pulse}: the road plane is perpendicular to local gravity")
+    t = normal[2] * (coefficients[2] - origin[2]) / denominator
+    contact = origin + t * up
+    height = -t
+    if not height > 0:
+        raise PathError(
+            f"pulse {pulse}: the fitted road surface is {height:.2f} m above the rig reference point"
+        )
+    residuals = design @ coefficients - heights
+    scale = 1.4826 * np.median(np.abs(residuals - np.median(residuals)))
+    if scale == 0:
+        sigma = 0.0
+    else:
+        row = np.array([contact[0] - origin[0], contact[1] - origin[1], 1.0])
+        covariance = scale**2 * np.linalg.inv(design.T @ design)
+        sigma = float(np.sqrt(max(row @ covariance @ row, 0.0)))
+    return contact, float(height), sigma
+
+
+def height_check(contacts, rig: Rig) -> dict:
+    """The measured height above the road, against the rig's hand measurement. This is the check that the
+    surface fit and the rig calibration agree, not a gate: a bias here would move every path sample."""
+    measured = np.array([c.height_above_road_m for c in contacts if not c.nominal])
+    result = {
+        "expected_m": rig.reference_height_above_road_m,
+        "measured_pulses": int(len(measured)),
+        "nominal_pulses": int(sum(c.nominal for c in contacts)),
+    }
+    if len(measured):
+        p5, p50, p95 = np.percentile(measured, [5, 50, 95])
+        result.update(p5_m=float(p5), p50_m=float(p50), p95_m=float(p95))
     return result
 
 
