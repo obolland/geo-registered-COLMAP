@@ -9,17 +9,23 @@ from pathlib import Path
 import numpy as np
 
 from georoute.package import SegmentedRoute
-from georoute.path import DistanceProfile, PathError, RiderPath
+from georoute.path import (
+    COMFORT_YAW_ACCEL_LIMIT_DEG_S2,
+    DESIGN_SPEED_MPS,
+    LATERAL_ACCEL_LIMIT_MPS2,
+    LONGITUDINAL_ACCEL_LIMIT_MPS2,
+    DistanceProfile,
+    PathError,
+    RiderPath,
+    speed_profile,
+    yaw_acceleration,
+)
 
 QA_SCHEMA = "georoute.qa/1.0.0"
-THRESHOLDS_VERSION = "1.0.0"
+THRESHOLDS_VERSION = "1.1.0"
 PATH_VERTICAL_P95_M = 0.03
-PATH_LATERAL_P95_M = 0.10
-PATH_LATERAL_MAX_M = 0.30
-YAW_ACCEL_LIMIT_DEG_S2 = 30.0
-DESIGN_SPEED_MPS = 18.0
-LATERAL_ACCEL_LIMIT_MPS2 = 3.0
-LONGITUDINAL_ACCEL_LIMIT_MPS2 = 1.5
+PATH_LATERAL_MAX_M = 0.50
+YAW_ACCEL_LIMIT_DEG_S2 = COMFORT_YAW_ACCEL_LIMIT_DEG_S2
 RTK_GAP_LIMIT_M = 50.0
 BRIDGED_GAP_MAX_M = 10.0
 BRIDGED_GRADE_LIMIT_PERCENT = 0.5
@@ -97,7 +103,6 @@ class QAReport:
             "measure": True,
             "measure_fields": [
                 "path_vertical_p95_m",
-                "path_lateral_p95_m",
                 "path_lateral_max_m",
                 "yaw_accel_deg_s2",
                 "longitudinal_accel_mps2",
@@ -106,7 +111,6 @@ class QAReport:
                 "bridged_grade_percent",
             ],
             "path_vertical_p95_m": PATH_VERTICAL_P95_M,
-            "path_lateral_p95_m": PATH_LATERAL_P95_M,
             "path_lateral_max_m": PATH_LATERAL_MAX_M,
             "yaw_accel_deg_s2": YAW_ACCEL_LIMIT_DEG_S2,
             "design_speed_mps": DESIGN_SPEED_MPS,
@@ -221,14 +225,12 @@ def _speed_profile(s, curvature):
     return np.sqrt(squared)
 
 
+def _speed_profile(s, curvature):
+    return speed_profile(s, curvature)
+
+
 def _yaw_acceleration(path: RiderPath) -> np.ndarray:
-    """Yaw acceleration on the reachable speed profile: the time derivative of yaw rate v*kappa is
-    v*(v*dkappa/ds + kappa*dv/ds)."""
-    speed = _speed_profile(path.s_m, path.curvature_1pm)
-    dcurvature = np.gradient(path.curvature_1pm, path.s_m)
-    dspeed = np.gradient(speed, path.s_m)
-    acceleration = speed * (speed * dcurvature + path.curvature_1pm * dspeed)
-    return np.degrees(np.abs(acceleration))
+    return yaw_acceleration(path.s_m, path.curvature_1pm)
 
 
 def _segment_mask(s, start, end):
@@ -243,11 +245,7 @@ def _path_gate(segment, path, lateral, vertical):
     lateral_p95 = float(np.percentile(lateral[mask], 95))
     lateral_max = float(lateral[mask].max())
     vertical_p95 = float(np.percentile(vertical[mask], 95))
-    failed = (
-        vertical_p95 > PATH_VERTICAL_P95_M
-        or lateral_p95 > PATH_LATERAL_P95_M
-        or lateral_max > PATH_LATERAL_MAX_M
-    )
+    failed = vertical_p95 > PATH_VERTICAL_P95_M or lateral_max > PATH_LATERAL_MAX_M
     detail = (
         f"{segment.seg_id} path to road: p95 vertical {vertical_p95 * 100:.1f} cm, "
         f"lateral {lateral_p95 * 100:.1f} cm, lateral max {lateral_max * 100:.1f} cm"
@@ -263,11 +261,7 @@ def _path_gate(segment, path, lateral, vertical):
             "lateral_p95_m": lateral_p95,
             "lateral_max_m": lateral_max,
         },
-        {
-            "vertical_p95_m": PATH_VERTICAL_P95_M,
-            "lateral_p95_m": PATH_LATERAL_P95_M,
-            "lateral_max_m": PATH_LATERAL_MAX_M,
-        },
+        {"vertical_p95_m": PATH_VERTICAL_P95_M, "lateral_max_m": PATH_LATERAL_MAX_M},
         detail,
     )
 

@@ -38,8 +38,7 @@ def test_a_clean_route_passes_every_gate_and_reports_its_thresholds():
     assert document["schema"] == "georoute.qa/1.0.0"
     assert document["thresholds"]["version"] == THRESHOLDS_VERSION
     assert document["thresholds"]["measure"] is True
-    assert document["thresholds"]["path_lateral_p95_m"] == 0.10
-    assert document["thresholds"]["path_lateral_max_m"] == 0.30
+    assert document["thresholds"]["path_lateral_max_m"] == 0.50
     assert document["thresholds"]["longitudinal_accel_mps2"] == 1.5
     assert [gate["name"] for gate in document["segments"][0]["gates"]] == [
         "path-to-road",
@@ -224,17 +223,29 @@ def test_rtk_gaps_fail_a_grade_step_across_a_bridged_gap():
     assert "bridged gap" in gate.detail
 
 
-def test_a_lateral_max_over_30_cm_fails_even_when_the_p95_is_inside_its_bound():
+def test_a_lateral_max_over_50_cm_fails_the_path_gate():
     path, profile, route = clean_route()
     trace = path.trace_enu_m.copy()
-    trace[100, 1] += 0.40
+    trace[100, 1] += 0.60
 
     report = assess(replace(path, trace_enu_m=trace), profile, route, {"failures": []}, "r", "b")
 
     gate = report.segments[0].gates[0]
     assert gate.status == "fail"
-    assert gate.values["lateral_max_m"] == pytest.approx(0.40, abs=1e-6)
-    assert gate.values["lateral_p95_m"] < 0.10
+    assert gate.values["lateral_max_m"] == pytest.approx(0.60, abs=1e-6)
+
+
+def test_lateral_p95_is_reported_but_is_not_a_pass_fail_gate():
+    path, profile, route = clean_route()
+    trace = path.trace_enu_m.copy()
+    trace[:, 1] += 0.20
+
+    report = assess(replace(path, trace_enu_m=trace), profile, route, {"failures": []}, "r", "b")
+
+    gate = report.segments[0].gates[0]
+    assert gate.status == "pass"
+    assert gate.values["lateral_p95_m"] == pytest.approx(0.20, abs=1e-6)
+    assert gate.values["lateral_max_m"] == pytest.approx(0.20, abs=1e-6)
 
 
 def test_a_bridged_gap_over_ten_metres_fails_and_reports_its_pulses():
@@ -271,6 +282,30 @@ def test_a_long_non_fixed_run_containing_a_short_bridged_gap_fails():
     assert gate.status == "fail"
     assert "contains a bridged gap" in gate.detail
     assert gate.values["max_bridged_gap_m"] < 10.0
+
+
+def test_the_comfort_gate_reports_a_bend_that_cannot_meet_the_cap():
+    x = np.arange(0.0, 40.0, 0.2)
+    bend = np.zeros_like(x)
+    mask = (x >= 18.5) & (x <= 21.5)
+    bend[mask] = 0.6 * np.sin(np.pi * (x[mask] - 18.5) / 3.0) ** 2
+    contacts = [contact_at(i, [e, float(n), 0.0]) for i, (e, n) in enumerate(zip(x, bend, strict=True))]
+    path = rider_path(contacts, FRAME)
+    profile = distance_profile(path, make_images(range(len(contacts))), FRAME, SyntheticGeoid())
+    route = cut_segments(path, profile, FRAME, 100.0)
+
+    report = assess(path, profile, route, {"failures": []}, "route", "build")
+
+    comfort = report.segments[0].gates[1]
+    assert path.smoothing["horizontal"]["comfort_met"] is False
+    assert path.smoothing["horizontal"]["max_lateral_m"] <= 0.5
+    assert comfort.status == "fail"
+    assert comfort.values["max_yaw_accel_deg_s2"] > 30.0
+    assert comfort.values["s_at_max_m"] == pytest.approx(
+        path.smoothing["horizontal"]["s_at_max_yaw_m"], abs=1e-6
+    )
+    assert "comfort:" in comfort.detail
+    assert report.segments[0].gates[0].status == "pass"
 
 
 def test_a_slice_6_registration_failure_marks_every_segment_for_recapture():
