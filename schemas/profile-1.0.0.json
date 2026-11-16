@@ -46,7 +46,10 @@
         "h_ortho": {"type": "number"},
         "sigma_h": {"type": "number", "minimum": 0},
         "grade": {"type": "number"},
-        "curvature": {"type": "number"},
+        "curvature": {
+          "type": "number",
+          "description": "Signed curvature in 1/m from the rider path, positive when the path turns left."
+        },
         "corridor_left_m": {"type": "number", "minimum": 0},
         "corridor_right_m": {"type": "number", "minimum": 0},
         "surface": {"type": "string", "minLength": 1},

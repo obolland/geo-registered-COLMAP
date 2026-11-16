@@ -16,7 +16,9 @@ from georoute.ingest import IMAGES_SCHEMA
 from georoute.package import (
     LOOP_RADIUS_M,
     NEIGHBOUR_RADIUS_M,
+    NEIGHBOUR_SAMPLE_M,
     PATH_STEP_M,
+    PackageError,
     cut_segments,
     write_package,
 )
@@ -51,6 +53,13 @@ class BuildError(ValueError):
     pass
 
 
+OSGM15_DATUMS = frozenset({"ETRS89"})
+# Road points need enough track to be road, not two-view speckle, and a small enough reprojection error not
+# to tilt the local plane. Both are Measure.
+MIN_ROAD_TRACK_LENGTH = 3
+MAX_ROAD_REPROJECTION_ERROR_PX = 2.0
+
+
 def build_route(
     workspace,
     images_json,
@@ -66,7 +75,12 @@ def build_route(
     failure still publishes the package, marked, with the failing segments on the recapture list."""
     generated = generated_utc or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     build_id = build_id or generated.replace("-", "").replace(":", "")
+    _plain_name(route_id, "route id")
+    _plain_name(build_id, "build id")
     try:
+        target = Path(out) / route_id / build_id
+        if target.exists():
+            raise PackageError(f"package {target} already exists; route builds are never overwritten")
         return _build(
             workspace,
             images_json,
@@ -90,6 +104,10 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
     frame = frame_from_images(data)
     if not isinstance(data.get("session"), str) or not data["session"]:
         raise BuildError(f"{images_json} has no session id")
+    geoid = load_geoid() if geoid is None else geoid
+    if geoid.name == "OSGM15" and frame.datum not in OSGM15_DATUMS:
+        raise BuildError(f"OSGM15 heights need an ETRS89 frame, got {frame.datum!r}; refusing to mix datums")
+    geoid_provenance = {**geoid.provenance(), "datum": frame.datum}
     report_path = Path(workspace) / "report.json"
     if not report_path.is_file():
         raise BuildError(
@@ -100,15 +118,13 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
         raise QAError(f"{report_path} has no 'failures' list")
 
     which, poses, _, _, model = _model_poses(Path(workspace))
-    points = np.array([point.xyz for point in model.points3D.values()], float)
-    if not len(points):
-        points = np.empty((0, 3))
+    points, point_stats = _road_points(model)
     contacts = road_contacts(rig_poses(poses, data["images"], rig, frame), points, rig, frame)
     path = rider_path(contacts, frame)
-    geoid = load_geoid() if geoid is None else geoid
     profile = distance_profile(path, data["images"], frame, geoid)
     route = cut_segments(path, profile, frame, segment_length_m)
     check = height_check(contacts, rig)
+    commit, dirty = _git_state()
     qa = assess(
         path,
         profile,
@@ -123,6 +139,7 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
             "road_contacts": len(contacts),
             "nominal_contacts": int(sum(contact.nominal for contact in contacts)),
             "trace_points": int(len(path.trace_s_m)),
+            "road_points": point_stats,
         },
     )
     failed = set(qa.recapture)
@@ -150,14 +167,19 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
             "nominal_sigma_m": NOMINAL_SURFACE_SIGMA_M,
             "robust_scale_m": ROBUST_SCALE_M,
         },
-        "segments": {"neighbour_radius_m": NEIGHBOUR_RADIUS_M, "loop_radius_m": LOOP_RADIUS_M},
+        "road_points": point_stats,
+        "segments": {
+            "neighbour_radius_m": NEIGHBOUR_RADIUS_M,
+            "neighbour_sample_m": NEIGHBOUR_SAMPLE_M,
+            "loop_radius_m": LOOP_RADIUS_M,
+        },
         "qa": {"thresholds_version": THRESHOLDS_VERSION, "thresholds": qa.thresholds()},
-        "geoid": geoid.provenance(),
+        "geoid": geoid_provenance,
         "model": which,
     }
     meta = {
         "datum": frame.datum,
-        "geoid": geoid.provenance(),
+        "geoid": geoid_provenance,
         "session_id": data["session"],
         "app_defaults": {
             "design_speed_mps": DESIGN_SPEED_MPS,
@@ -169,7 +191,8 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
         "provenance": {
             "sessions": [data["session"]],
             "rig_sha256": rig.sha256,
-            "pipeline_commit": _pipeline_commit(),
+            "pipeline_commit": commit,
+            "git_dirty": dirty,
             "tool_versions": _tool_versions(),
             "parameters": parameters,
         },
@@ -226,22 +249,55 @@ def _tool_versions() -> dict:
     return versions
 
 
-def _pipeline_commit() -> str:
+def _git_state() -> tuple[str, bool | None]:
+    """The commit the build ran from, and whether tracked or untracked files were dirty at the time."""
+    root = str(Path(__file__).parents[2])
     try:
-        result = subprocess.run(
-            ["git", "-C", str(Path(__file__).parents[2]), "rev-parse", "HEAD"],
+        commit = subprocess.run(
+            ["git", "-C", root, "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             check=True,
-        )
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
     except (OSError, subprocess.CalledProcessError):
-        return "unknown"
-    return result.stdout.strip() or "unknown"
+        return "unknown", None
+    return commit or "unknown", bool(status.strip())
+
+
+def _road_points(model):
+    """Road-fit points with enough track and small enough reprojection error; two-view specks and badly
+    matched points would tilt the local plane even under the robust loss."""
+    all_points = list(model.points3D.values())
+    used = [
+        point
+        for point in all_points
+        if point.track.length() >= MIN_ROAD_TRACK_LENGTH and point.error <= MAX_ROAD_REPROJECTION_ERROR_PX
+    ]
+    points = np.array([point.xyz for point in used], float)
+    if not len(points):
+        points = np.empty((0, 3))
+    return points, {
+        "input": len(all_points),
+        "used": len(used),
+        "min_track_length": MIN_ROAD_TRACK_LENGTH,
+        "max_reprojection_error_px": MAX_ROAD_REPROJECTION_ERROR_PX,
+    }
+
+
+def _plain_name(value, what):
+    if not isinstance(value, str) or not value or Path(value).name != value or value in (".", ".."):
+        raise PackageError(f"{what} {value!r} must be a plain name, not a path")
 
 
 def _write_refusal(out, build_id, route_id, message, generated):
     try:
-        folder = Path(out) / "qa" / build_id
+        folder = Path(out) / "qa" / route_id / build_id
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / "report.json"
         if target.exists():

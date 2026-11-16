@@ -10,15 +10,26 @@ from georoute import build
 from georoute.build import BuildError, build_route
 from georoute.cli import main
 from georoute.ingest import IMAGES_SCHEMA
+from georoute.package import PackageError
 from georoute.rig import load_rig
 
 EXAMPLE = Path(__file__).parents[1] / "rigs" / "handlebar-4cam.example.toml"
 SCHEMAS = Path(__file__).parents[1] / "schemas"
 
 
+class FakeTrack:
+    def __init__(self, length):
+        self._length = length
+
+    def length(self):
+        return self._length
+
+
 class FakePoint:
-    def __init__(self, xyz):
+    def __init__(self, xyz, track_length=5, error=1.0):
         self.xyz = np.asarray(xyz, float)
+        self.track = FakeTrack(track_length)
+        self.error = error
 
 
 class FakeModel:
@@ -70,6 +81,7 @@ def make_dataset(tmp_path, failures=()):
 
 def install(monkeypatch, poses, model):
     monkeypatch.setattr(build, "_model_poses", lambda workspace: ("refined", poses, {}, {}, model))
+    monkeypatch.setattr(build, "_git_state", lambda: ("abc123", True))
 
 
 def run_build(tmp_path, monkeypatch, failures=(), segment_length=20.0, build_id="b1"):
@@ -108,12 +120,97 @@ def test_build_route_publishes_a_schema_valid_package_with_qa_and_plots(tmp_path
     assert route["qa"]["status"] == "pass"
     assert route["provenance"]["parameters"]["smoothing"]["method"] == "cubic-smoothing-spline"
     assert route["provenance"]["parameters"]["segment_length_m"] == 20.0
+    assert route["provenance"]["parameters"]["segments"]["neighbour_sample_m"] == 5.0
+    assert route["provenance"]["pipeline_commit"] == "abc123"
+    assert route["provenance"]["git_dirty"] is True
+    assert route["geoid"]["datum"] == "ETRS89"
 
     qa = json.loads(Path(summary["qa"]).read_text())
     assert qa["status"] == "pass"
     assert qa["checks"]["height_above_road"]["measured_pulses"] == 60
     for name in ("plan.png", "profile.png", "curvature.png"):
         assert (Path(summary["qa"]).parent / name).stat().st_size > 1000
+
+
+def test_the_road_fit_ignores_short_tracks_and_large_reprojection_errors(tmp_path, monkeypatch):
+    rig, workspace, images_json, poses, model, _ = make_dataset(tmp_path)
+    used = len(model.points3D)
+    model.points3D[used] = FakePoint([10.0, 10.0, 0.0], track_length=2)
+    model.points3D[used + 1] = FakePoint([11.0, 11.0, 0.0], error=3.0)
+    install(monkeypatch, poses, model)
+
+    summary = build_route(
+        workspace,
+        images_json,
+        rig,
+        tmp_path / "routes",
+        "route",
+        build_id="b1",
+        geoid=SyntheticGeoid(),
+        generated_utc="2026-11-16T12:00:00Z",
+    )
+
+    stats = json.loads((Path(summary["package"]) / "route.json").read_text())["provenance"]["parameters"][
+        "road_points"
+    ]
+    assert stats["input"] == used + 2
+    assert stats["used"] == used
+    assert stats["min_track_length"] == 3
+    assert stats["max_reprojection_error_px"] == 2.0
+
+
+def test_osgm15_refuses_a_frame_that_is_not_etrs89(tmp_path, monkeypatch):
+    rig, workspace, images_json, poses, model, data = make_dataset(tmp_path)
+    install(monkeypatch, poses, model)
+    data["datum"] = "WGS84"
+    data["frame"]["datum"] = "WGS84"
+    images_json.write_text(json.dumps(data))
+
+    with pytest.raises(BuildError, match="ETRS89"):
+        build_route(
+            workspace,
+            images_json,
+            rig,
+            tmp_path / "routes",
+            "route",
+            build_id="b1",
+            geoid=SyntheticGeoid(),
+            generated_utc="2026-11-16T12:00:00Z",
+        )
+
+    refusal = json.loads((tmp_path / "routes" / "qa" / "route" / "b1" / "report.json").read_text())
+    assert "ETRS89" in refusal["refused"]
+
+
+def test_rebuilding_an_existing_build_id_does_not_overwrite_its_qa(tmp_path, monkeypatch):
+    rig, workspace, images_json, poses, model, _ = make_dataset(tmp_path)
+    install(monkeypatch, poses, model)
+    summary = build_route(
+        workspace,
+        images_json,
+        rig,
+        tmp_path / "routes",
+        "route",
+        build_id="b1",
+        geoid=SyntheticGeoid(),
+        generated_utc="2026-11-16T12:00:00Z",
+    )
+    qa_path = Path(summary["qa"])
+    before = qa_path.read_text()
+
+    with pytest.raises(PackageError, match="already exists"):
+        build_route(
+            workspace,
+            images_json,
+            rig,
+            tmp_path / "routes",
+            "route",
+            build_id="b1",
+            geoid=SyntheticGeoid(),
+            generated_utc="2026-11-16T12:00:00Z",
+        )
+
+    assert qa_path.read_text() == before
 
 
 def test_a_failing_registration_gate_still_publishes_the_route_marked_for_recapture(tmp_path, monkeypatch):
@@ -144,7 +241,7 @@ def test_a_missing_colmap_report_writes_a_refusal_qa_report_and_no_package(tmp_p
             generated_utc="2026-11-16T12:00:00Z",
         )
 
-    refusal = json.loads((tmp_path / "routes" / "qa" / "b1" / "report.json").read_text())
+    refusal = json.loads((tmp_path / "routes" / "qa" / "route" / "b1" / "report.json").read_text())
     assert refusal["status"] == "fail"
     assert "colmap-report" in refusal["refused"]
     assert not (tmp_path / "routes" / "route" / "b1").exists()

@@ -383,4 +383,4 @@ def _route_build(args) -> int:
     )
     print(f"package: {summary['package']}")
     print(f"qa: {summary['qa']}")
-    return 0 if summary["status"] == "pass" else 1
+    return 1 if summary["status"] == "fail" else 0
