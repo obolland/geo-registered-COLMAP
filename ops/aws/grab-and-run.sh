@@ -22,6 +22,10 @@ INSTANCE_PROFILE=georoute-splat-ec2
 ZONES=(eu-west-2a eu-west-2b eu-west-2c)
 declare -A SUBNETS=([eu-west-2b]=subnet-b965e2f5 [eu-west-2c]=subnet-d55e6abc)
 RETRY_SECONDS=${GEOROUTE_RETRY_SECONDS:-900}
+# Fresh-instance mode: with GEOROUTE_LAUNCH_IMAGE set, every zone launches a new instance from that image
+# (type GEOROUTE_TYPE, root disk GEOROUTE_ROOT_GB) instead of starting the existing one.
+LAUNCH_IMAGE=${GEOROUTE_LAUNCH_IMAGE:-}
+ROOT_GB=${GEOROUTE_ROOT_GB:-}
 
 until_time=$1
 script=$2
@@ -35,9 +39,17 @@ echo "trying ${ZONES[*]} until $(date -r "$deadline" '+%a %H:%M'), every $((RETR
 
 aws_() { aws --profile "$PROFILE" --region "$REGION" "$@"; }
 
-read -r type home_zone state < <(aws_ ec2 describe-instances --instance-ids "$INSTANCE" \
-    --query 'Reservations[0].Instances[0].[InstanceType,Placement.AvailabilityZone,State.Name]' --output text)
-[[ $state == stopped ]] || { echo "instance is $state, expected stopped" >&2; exit 1; }
+if [[ -n $LAUNCH_IMAGE ]]; then
+    IMAGE=$LAUNCH_IMAGE
+    type=${GEOROUTE_TYPE:-g6.2xlarge}
+    home_zone=none
+    SUBNETS[eu-west-2a]=subnet-0bcdbc71
+    echo "fresh-instance mode: $type from $IMAGE${ROOT_GB:+ with a ${ROOT_GB} GB root disk}"
+else
+    read -r type home_zone state < <(aws_ ec2 describe-instances --instance-ids "$INSTANCE" \
+        --query 'Reservations[0].Instances[0].[InstanceType,Placement.AvailabilityZone,State.Name]' --output text)
+    [[ $state == stopped ]] || { echo "instance is $state, expected stopped" >&2; exit 1; }
+fi
 
 reservation=""
 cancel_reservation() {
@@ -83,8 +95,12 @@ reserve() { # reserve <zone>: sets reservation, or returns 1 on a capacity refus
 }
 
 launch_copy() { # launch_copy <zone>: launches from the image into the zone's reservation, then stops it
-    local id
-    id=$(aws_ ec2 run-instances --image-id "$IMAGE" --instance-type "$type" --subnet-id "${SUBNETS[$1]}" \
+    local id disk=()
+    if [[ -n $ROOT_GB ]]; then
+        disk=(--block-device-mappings "DeviceName=$(aws_ ec2 describe-images --image-ids "$IMAGE" \
+            --query 'Images[0].RootDeviceName' --output text),Ebs={VolumeSize=$ROOT_GB,VolumeType=gp3,DeleteOnTermination=true}")
+    fi
+    id=$(aws_ ec2 run-instances "${disk[@]}" --image-id "$IMAGE" --instance-type "$type" --subnet-id "${SUBNETS[$1]}" \
         --security-group-ids "$SECURITY_GROUP" --iam-instance-profile "Name=$INSTANCE_PROFILE" \
         --instance-initiated-shutdown-behavior stop \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Project,Value=georoute},{Key=Name,Value=georoute-gpu-$1}]" \
