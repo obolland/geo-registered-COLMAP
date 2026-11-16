@@ -222,8 +222,14 @@ class RiderPath:
     heading_rad: np.ndarray
     curvature_1pm: np.ndarray
     sigma_m: np.ndarray
-    trace_s_m: np.ndarray
+    # Raw trace distance is the smoothing spline's parameter. trace_smoothed_m is where each trace sample
+    # sits on the published route s, which is shorter when smoothing removes weave. Anything placing trace
+    # samples against segments, profile samples or RTK runs uses trace_smoothed_m, never the parameter.
+    trace_parameter_m: np.ndarray
+    trace_smoothed_m: np.ndarray
     trace_enu_m: np.ndarray
+    trace_fit_enu_m: np.ndarray
+    trace_heading_rad: np.ndarray
     trace_sigma_m: np.ndarray
     trace_pulses: np.ndarray
     trace_bridged: np.ndarray
@@ -279,14 +285,22 @@ def rider_path(
     dense_distance, dense_s = dense_distance[keep], dense_s[keep]
     enu_dense, heading, curvature = enu_dense[keep], heading[keep], curvature[keep]
     sigma_dense = np.interp(dense_distance, distance, sigma)
+    trace_smoothed = np.interp(distance, dense_distance, dense_s)
+    trace_fit = np.column_stack([spline(distance) for spline in splines])
+    trace_de = splines[0].derivative()(distance)
+    trace_dn = splines[1].derivative()(distance)
+    trace_heading = (np.arctan2(trace_dn, trace_de) + np.pi) % (2 * np.pi) - np.pi
     return RiderPath(
         s_m=dense_s,
         enu_m=enu_dense,
         heading_rad=heading,
         curvature_1pm=curvature,
         sigma_m=sigma_dense,
-        trace_s_m=distance,
+        trace_parameter_m=distance,
+        trace_smoothed_m=trace_smoothed,
         trace_enu_m=enu,
+        trace_fit_enu_m=trace_fit,
+        trace_heading_rad=trace_heading,
         trace_sigma_m=sigma,
         trace_pulses=pulses,
         trace_bridged=bridged,
@@ -461,15 +475,18 @@ def distance_profile(path: RiderPath, images, frame: LocalFrame, geoid) -> Dista
     orthometric = np.asarray(geoid.orthometric_height(lla[:, 0], lla[:, 1], lla[:, 2]), float)
     grade = _grade(s_h, orthometric)
     flags = _image_quality(images)
-    nearest = _nearest(path.trace_s_m, s)
-    quality = []
-    for index in nearest:
-        sample = set(flags.get(int(path.trace_pulses[index]), ()))
-        if path.trace_bridged[index]:
+    # Trace samples are denser than the 1 m profile and map many-to-one. Union their flags onto the nearest
+    # profile sample rather than sampling the nearest trace per profile point, which would drop flagged
+    # pulses that fall between profile samples.
+    quality = [set() for _ in s]
+    for trace_index, target in enumerate(_nearest(s, path.trace_smoothed_m)):
+        sample = quality[int(target)]
+        sample.update(flags.get(int(path.trace_pulses[trace_index]), ()))
+        if path.trace_bridged[trace_index]:
             sample.add("bridged-gap")
-        if path.trace_nominal[index]:
+        if path.trace_nominal[trace_index]:
             sample.add("surface-nominal")
-        quality.append(tuple(sorted(sample)))
+    quality = tuple(tuple(sorted(sample)) for sample in quality)
     count = len(s)
     return DistanceProfile(
         s,

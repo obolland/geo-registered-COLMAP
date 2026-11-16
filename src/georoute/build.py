@@ -138,7 +138,7 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
             "height_above_road": check,
             "road_contacts": len(contacts),
             "nominal_contacts": int(sum(contact.nominal for contact in contacts)),
-            "trace_points": int(len(path.trace_s_m)),
+            "trace_points": int(len(path.trace_parameter_m)),
             "road_points": point_stats,
         },
     )

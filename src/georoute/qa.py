@@ -186,13 +186,15 @@ def _registration_failures(registration: dict) -> list[str]:
 
 
 def _trace_deviations(path: RiderPath):
-    """Lateral and vertical distance from each raw road contact to the smoothed path, at the contact's own
-    arclength. Lateral is perpendicular to the smoothed tangent, not a plain coordinate difference."""
-    enu, heading, _, _ = path.at(path.trace_s_m)
-    delta = enu[:, :2] - path.trace_enu_m[:, :2]
-    tangent_e, tangent_n = np.cos(heading), np.sin(heading)
+    """Lateral and vertical distance from each raw road contact to the smoothed spline at that contact's
+    parameter. Lateral is perpendicular to the smoothed tangent, not a plain coordinate difference. The
+    spline's own value is used because a trace distance is not a smoothed-path arclength when weave is
+    removed."""
+    delta = path.trace_fit_enu_m[:, :2] - path.trace_enu_m[:, :2]
+    tangent_e = np.cos(path.trace_heading_rad)
+    tangent_n = np.sin(path.trace_heading_rad)
     lateral = np.abs(delta[:, 0] * tangent_n - delta[:, 1] * tangent_e)
-    vertical = np.abs(enu[:, 2] - path.trace_enu_m[:, 2])
+    vertical = np.abs(path.trace_fit_enu_m[:, 2] - path.trace_enu_m[:, 2])
     return lateral, vertical
 
 
@@ -216,7 +218,7 @@ def _segment_mask(s, start, end):
 
 
 def _path_gate(segment, path, lateral, vertical):
-    mask = _segment_mask(path.trace_s_m, segment.s_start, segment.s_end)
+    mask = _segment_mask(path.trace_smoothed_m, segment.s_start, segment.s_end)
     lateral_p95 = float(np.percentile(lateral[mask], 95))
     lateral_max = float(lateral[mask].max())
     vertical_p95 = float(np.percentile(vertical[mask], 95))
@@ -367,9 +369,9 @@ def _spacing(s, index, backwards):
 
 
 def _pulses_in(path, s_start, s_end):
-    mask = (path.trace_s_m >= s_start - 1e-9) & (path.trace_s_m <= s_end + 1e-9)
+    mask = (path.trace_smoothed_m >= s_start - 1e-9) & (path.trace_smoothed_m <= s_end + 1e-9)
     if not mask.any():
-        nearest = int(_nearest_index(path.trace_s_m, (s_start + s_end) / 2))
+        nearest = int(_nearest_index(path.trace_smoothed_m, (s_start + s_end) / 2))
         return [int(path.trace_pulses[nearest])]
     pulses = path.trace_pulses[mask]
     return [int(pulses.min()), int(pulses.max())]

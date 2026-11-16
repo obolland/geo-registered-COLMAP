@@ -3,10 +3,11 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from test_path import FRAME, profile_for
+from test_path import FRAME, SyntheticGeoid, contact_at, make_images, profile_for
 
 from georoute import qa
 from georoute.package import cut_segments
+from georoute.path import distance_profile, rider_path
 from georoute.qa import (
     RTK_GAP_LIMIT_M,
     THRESHOLDS_VERSION,
@@ -42,6 +43,48 @@ def test_a_clean_route_passes_every_gate_and_reports_its_thresholds():
         "registration",
     ]
     assert report.summary()["segments"] == {"seg_0000": "pass"}
+
+
+def test_a_trace_longer_than_the_smoothed_path_still_assesses():
+    x = np.arange(0.0, 100.0, 0.5)
+    weave = 0.5 * np.sin(2 * np.pi * x / 5.0)
+    contacts = [contact_at(i, [e, float(n), 0.0]) for i, (e, n) in enumerate(zip(x, weave, strict=True))]
+    path = rider_path(contacts, FRAME)
+    assert path.trace_parameter_m[-1] > path.length_m
+    profile = distance_profile(path, make_images(range(len(contacts))), FRAME, SyntheticGeoid())
+    route = cut_segments(path, profile, FRAME, 30.0)
+
+    report = assess(path, profile, route, {"failures": []}, "route", "build")
+
+    assert len(report.segments) == 4
+
+
+def test_a_trace_sample_is_placed_by_smoothed_arclength_not_raw_distance():
+    x = np.arange(0.0, 60.0, 0.5)
+    weave = 0.8 * np.sin(2 * np.pi * x / 4.0)
+    contacts = [contact_at(i, [e, float(n), 0.0]) for i, (e, n) in enumerate(zip(x, weave, strict=True))]
+    path = rider_path(contacts, FRAME)
+    index = next(
+        i
+        for i, (raw, smoothed) in enumerate(zip(path.trace_parameter_m, path.trace_smoothed_m, strict=True))
+        if raw > 30.0 and smoothed < 29.5
+    )
+    images = make_images(range(len(contacts)))
+    for image in images:
+        image["carr_soln"] = 1 if image["pulse"] == index else 2
+    profile = distance_profile(path, images, FRAME, SyntheticGeoid())
+    route = cut_segments(path, profile, FRAME, 30.0)
+
+    flagged = [s for s, quality in zip(profile.s_m, profile.quality, strict=True) if "rtk-float" in quality]
+    assert flagged
+    assert all(abs(s - path.trace_smoothed_m[index]) <= 1.0 for s in flagged)
+    assert path.trace_parameter_m[index] > 30.0
+
+    def segment_for(s):
+        return next(segment for segment in route.segments if segment.s_start <= s <= segment.s_end)
+
+    assert "rtk-float" in segment_for(path.trace_smoothed_m[index]).quality
+    assert "rtk-float" not in segment_for(path.trace_parameter_m[index]).quality
 
 
 def test_path_to_road_fails_a_segment_when_the_smoothed_path_departs_vertically():
