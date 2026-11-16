@@ -379,3 +379,21 @@ def test_refine_holds_out_every_nth_pulse_and_report_gates_on_them(tmp_path):
     assert refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0, holdout_every=3)["held_out"] == 4
     refined = json.loads((tmp_path / "ws" / "priors.json").read_text())
     assert sum(r["held_out"] for r in refined.values()) == 4
+
+
+def test_prepare_uses_each_cameras_colmap_model(tmp_path):
+    import json
+    from dataclasses import replace
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    rig = replace(
+        rig, camera_types={**rig.camera_types, 1: replace(rig.camera_type(1), colmap_model="OPENCV_FISHEYE")}
+    )
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
+    with pycolmap.Database.open(tmp_path / "ws" / "database.db") as db:
+        models = {db.read_camera(i.camera_id).model for i in db.read_all_images()}
+    assert models == {pycolmap.CameraModelId.OPENCV, pycolmap.CameraModelId.OPENCV_FISHEYE}

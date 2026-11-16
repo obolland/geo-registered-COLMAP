@@ -11,20 +11,20 @@ import numpy as np
 
 from georoute.recovery import RecoveredTime, recover_time_marks
 
-CAMERA_COUNT = 4
 WEEK_S = 604800
 GPS_EPOCH = datetime(1980, 1, 6, tzinfo=UTC)
 # GPS-UTC has been 18 s since 2017-01-01 and no further leap second has been scheduled.
 GPS_MINUS_UTC_S = 18
 LEAP_VALID_FROM = datetime(2017, 1, 1, tzinfo=UTC)
 
-# The logger rejects sync edges sooner than 30 ms; the 100D's lag was 87-123 ms in the field.
-DELAY_RANGE_US = (30_000, 500_000)
+# The logger rejects sync edges sooner than 30 ms. The ceiling is only a sanity limit: each camera's
+# own shutter lag range comes from the rig config and is checked when photos are matched.
+DELAY_RANGE_US = (30_000, 2_000_000)
 GPS_WEEK_RANGE = (2000, 4000)
 WEEK_MS = WEEK_S * 1000
 MAX_SPEED_MM_S = 100_000
 
-PULSES_HEADER = ["pulse_n", "kind", "cmd_ticks_us"] + [f"cam{i}_delay_us" for i in range(CAMERA_COUNT)]
+PULSES_COLUMNS = ["pulse_n", "kind", "cmd_ticks_us"]
 TM2_HEADER = [
     "pulse_n",
     "count",
@@ -109,6 +109,11 @@ class Session:
     pvt: PvtTrack
     load_warnings: list[str]
     recovered: dict[int, RecoveredTime] = field(default_factory=dict)
+
+    @property
+    def camera_count(self) -> int:
+        """The logger's sync inputs, one camN_delay_us column each in pulses.csv."""
+        return len(self.pulses[0].delays_us)
 
     @property
     def clean_stop(self) -> bool:
@@ -244,14 +249,33 @@ def _check_unique(seen: set, row: _Row, n: int):
 
 def _read_pulses(path: Path, warnings: list[str]) -> list[Pulse]:
     pulses, seen = [], set()
-    for r in _rows(path, PULSES_HEADER, warnings):
+    cameras = _camera_columns(path)
+    for r in _rows(path, PULSES_COLUMNS + [f"cam{i}_delay_us" for i in range(cameras)], warnings):
         n = r.integer("pulse_n")
         _check_unique(seen, r, n)
         if r.text("kind") not in ("warmup", "capture"):
             raise SessionError(f"{r.where} has unknown kind {r.text('kind')!r}")
-        delays = tuple(r.optional_int(f"cam{i}_delay_us", *DELAY_RANGE_US) for i in range(CAMERA_COUNT))
+        delays = tuple(r.optional_int(f"cam{i}_delay_us", *DELAY_RANGE_US) for i in range(cameras))
         pulses.append(Pulse(n, r.text("kind"), r.integer("cmd_ticks_us"), delays))
     return pulses
+
+
+def _camera_columns(path: Path) -> int:
+    """How many cameras pulses.csv records: its camN_delay_us columns, numbered from cam0 with no gaps.
+    The header itself is checked in full by _rows."""
+    if not path.exists():
+        raise SessionError(f"{path.name} is missing from {path.parent}")
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            header = next(csv.reader(f), [])
+    except (OSError, UnicodeDecodeError) as e:
+        raise SessionError(f"can't read {path.name}: {e}") from e
+    count = len(header) - len(PULSES_COLUMNS)
+    if count < 1:
+        raise SessionError(
+            f"{path.name} header is {header}, expected {PULSES_COLUMNS} then camN_delay_us columns"
+        )
+    return count
 
 
 def _read_tm2(path: Path, warnings: list[str]) -> dict[int, Tm2]:

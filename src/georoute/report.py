@@ -3,7 +3,7 @@
 import numpy as np
 
 from georoute.rtcm import base_positions
-from georoute.session import CAMERA_COUNT, Session, SessionError
+from georoute.session import Session, SessionError
 from georoute.trajectory import position_jumps
 
 # Lost pulse rows break photo-to-pulse matching; the others show up in the data the report checks.
@@ -91,7 +91,7 @@ def session_report(s: Session) -> dict:
                 k: sum(p.kind == k and p.delays_us[c] is not None for p in s.pulses)
                 for k in ("warmup", "capture")
             }
-            for c in range(CAMERA_COUNT)
+            for c in range(s.camera_count)
         },
         "pvt": pvt,
         "base": base,

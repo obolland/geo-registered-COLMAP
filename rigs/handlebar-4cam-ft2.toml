@@ -8,9 +8,11 @@
 # mounting marks (side cameras 50 degrees off straight ahead). Orientation is applied as yaw, then
 # pitch, then roll (rig z, then x, then y).
 
-schema = "georoute.rig/1.0.0"
+schema = "georoute.rig/1.1.0"
 name = "handlebar-4x100d-ft2"
 measured = true
+# The front camera defines the rig axes for calibration and the report.
+reference_camera = 2
 
 [reference]
 description = "centre of the antenna base on the bar's top face"

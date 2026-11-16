@@ -322,7 +322,7 @@ def test_gaps_are_checked_in_canon_file_numbers_when_ordering_by_them():
     assert len(order_photos([photo("IMG_9999.JPG", 1009999, 1.0), photo("IMG_0001.JPG", 1010001, 2.0)])) == 2
 
 
-@pytest.mark.parametrize("exposure", [0.0, -0.001, 40.0])
+@pytest.mark.parametrize("exposure", [0.0, -0.001, float("inf")])
 def test_implausible_exposure_refuses(exposure):
     record = {"SourceFile": "/x/cam0/IMG_1.JPG", "DateTimeOriginal": "2026:11:08 14:43:08"}
     record["ExposureTime"] = exposure

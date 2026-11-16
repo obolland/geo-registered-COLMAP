@@ -91,8 +91,9 @@ def prepare(
     pulses: tuple[int, int] | None = None,
     max_image_size: int = 3200,
 ) -> dict:
-    """Workspace for COLMAP: a database with one OPENCV camera per folder, SIFT features (CPU) and
-    first-pass priors, plus priors.json recording them. pulses=(first, last) limits it to a subset."""
+    """Workspace for COLMAP: a database with one camera per folder (its model from the rig's camera
+    type), SIFT features (CPU) and first-pass priors, plus priors.json recording them.
+    pulses=(first, last) limits it to a subset."""
     data = json.loads(Path(images_json).read_text())
     images = [i for i in data["images"] if pulses is None or pulses[0] <= i["pulse"] <= pulses[1]]
     if not images:
@@ -106,18 +107,20 @@ def prepare(
         (workspace / stale).unlink(missing_ok=True)
     shutil.rmtree(workspace / "sparse", ignore_errors=True)
 
-    reader = pycolmap.ImageReaderOptions()
-    reader.camera_model = "OPENCV"
     extraction = extraction_options(max_image_size)
-    pycolmap.extract_features(
-        db_path,
-        Path(images_root),
-        image_names=[i["path"] for i in images],
-        camera_mode=pycolmap.CameraMode.PER_FOLDER,
-        reader_options=reader,
-        extraction_options=extraction,
-        device=pycolmap.Device.cpu,
-    )
+    models = sorted({rig.camera_type(i["camera"]).colmap_model for i in images})
+    for model in models:
+        reader = pycolmap.ImageReaderOptions()
+        reader.camera_model = model
+        pycolmap.extract_features(
+            db_path,
+            Path(images_root),
+            image_names=[i["path"] for i in images if rig.camera_type(i["camera"]).colmap_model == model],
+            camera_mode=pycolmap.CameraMode.PER_FOLDER,
+            reader_options=reader,
+            extraction_options=extraction,
+            device=pycolmap.Device.cpu,
+        )
 
     with pycolmap.Database.open(db_path) as db:
         extracted = {i.name for i in db.read_all_images()}
@@ -358,9 +361,11 @@ def _prior_bundle_adjustment(
         raise ReconstructionError(f"prior bundle adjustment failed: {summary.brief_report()}")
 
 
-def report(workspace, rig: Rig, reference: int = 2) -> dict:
+def report(workspace, rig: Rig, reference: int | None = None) -> dict:
     """report.json for the refined model (or the first one if not refined): mapping outcome, per-camera
-    prior residuals on RTK-fixed images, the rig check and the gate failures."""
+    prior residuals on RTK-fixed images, the rig check and the gate failures. The reference camera
+    defaults to the rig's."""
+    reference = rig.reference_camera if reference is None else reference
     workspace = Path(workspace)
     which, poses, centres, record, model = _model_poses(workspace)
     priors = {n: np.array(r["centre"]) for n, r in record.items()}
@@ -414,12 +419,13 @@ def _model_poses(workspace: Path):
     return which, poses, centres, record, model
 
 
-def calibrate_rig(workspace, rig_path, out_path, reference: int = 2) -> dict:
+def calibrate_rig(workspace, rig_path, out_path, reference: int | None = None) -> dict:
     """Calibrated rig config from the workspace's reconstruction (see calibrate.py)."""
     from georoute.calibrate import calibrate_rotations, with_orientations, write_calibrated_rig
     from georoute.rig import load_rig
 
     rig = load_rig(rig_path)
+    reference = rig.reference_camera if reference is None else reference
     _, poses, _, _, _ = _model_poses(Path(workspace))
     calibration = calibrate_rotations(poses, rig, reference)
     offset = rig_check(poses, with_orientations(rig, calibration), reference)["axial_offset_m"]
