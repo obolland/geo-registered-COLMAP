@@ -24,6 +24,7 @@ class AntennaPositions:
     fix_type: np.ndarray
     h_acc_m: np.ndarray
     v_acc_m: np.ndarray
+    velocity_ecef: np.ndarray
     bracket_gap_s: np.ndarray
     flags: list[list[str]]
 
@@ -60,12 +61,7 @@ def antenna_positions(track: PvtTrack, times, nav_period_s: float = 0.2) -> Ante
     s = ((t - t0) / h)[:, None]
 
     ecef = lla_to_ecef(track.lat_deg, track.lon_deg, track.height_m)
-    vel = np.stack(
-        [
-            ned_to_ecef(la, lo, v)
-            for la, lo, v in zip(track.lat_deg, track.lon_deg, track.vel_ned_mps, strict=True)
-        ]
-    )
+    vel = ned_to_ecef(track.lat_deg, track.lon_deg, track.vel_ned_mps)
     h00, h10, h01, h11 = 2 * s**3 - 3 * s**2 + 1, s**3 - 2 * s**2 + s, -2 * s**3 + 3 * s**2, s**3 - s**2
     pos = h00 * ecef[i] + h10 * h[:, None] * vel[i] + h01 * ecef[i + 1] + h11 * h[:, None] * vel[i + 1]
 
@@ -92,6 +88,7 @@ def antenna_positions(track: PvtTrack, times, nav_period_s: float = 0.2) -> Ante
         fix_type=fix,
         h_acc_m=(1 - w) * track.h_acc_m[i] + w * track.h_acc_m[i + 1],
         v_acc_m=(1 - w) * track.v_acc_m[i] + w * track.v_acc_m[i + 1],
+        velocity_ecef=(1 - w)[:, None] * vel[i] + w[:, None] * vel[i + 1],
         bracket_gap_s=h,
         flags=flags,
     )

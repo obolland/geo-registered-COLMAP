@@ -117,3 +117,11 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 - Logger issues to fix later: the first pulse after a stop of 5-20 s is missed by every camera (cameras doze; add a warm-up pulse after a pause); 13 KB of RTCM dropped at the UART; the F9P TIM-TM2 count-0 quirk is new since field test 1.
 - Before the next ride: find cam1's Err 80 cause (fresh battery and card, long bench run, swap hot-shoe adapter and cable).
 - Next: slice 6, COLMAP with priors, on session 1.
+
+## Slice 6 progress (2026-11-15)
+
+- Built (branch `slice-6`): `colmap-prepare` (CPU SIFT from full resolution, one OPENCV camera per folder, first-pass priors with the lever arm under a level rig facing the RTK velocity), spatial matching, mapping with priors, prior refinement with prior-aware bundle adjustment, a gated report (`colmap_report.py`), rig calibration from the reconstruction (`calibrate.py`), and `colmap-run` / `rig-calibrate`.
+- Performance: COLMAP's default SIFT first octave of -1 made extraction about 30 times slower on this Mac; first octave 0 on all cores gives about 0.3 s per photo.
+- Subset (pulses 100-250, 604 photos): one model, all registered, 0.98 px; 8269 verified pairs including strong cross-camera pairs.
+- The hand-measured side-camera yaw was 50 degrees but the photos say 40.5 and 39.8 (probably measured from the bar); calibration fixes it, and the optical centre sits about 24 mm behind the lens front. After calibration: horizontal prior residual p95 4.1-4.5 cm (passes), rig agreement 0.6-1.3 cm and 0.03 degrees.
+- Open: vertical prior residual p95 about 6 cm, from one stretch (pulses 136-158) where the reconstruction sits up to 8 cm below RTK heights that Doppler supports; that stretch has weaker ties (about 1860 points per photo against 2600-3000). Full session (loop closure) running to see whether it persists.
