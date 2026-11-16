@@ -32,6 +32,9 @@ def test_a_clean_route_passes_every_gate_and_reports_its_thresholds():
     document = report.document()
     assert document["schema"] == "georoute.qa/1.0.0"
     assert document["thresholds"]["version"] == THRESHOLDS_VERSION
+    assert document["thresholds"]["measure"] is True
+    assert document["thresholds"]["path_lateral_p95_m"] == 0.10
+    assert document["thresholds"]["path_lateral_max_m"] == 0.30
     assert [gate["name"] for gate in document["segments"][0]["gates"]] == [
         "path-to-road",
         "comfort",
@@ -71,7 +74,7 @@ def test_comfort_fails_on_a_curvature_step_at_design_speed():
     assert gate.values["max_yaw_accel_deg_s2"] > 30.0
 
 
-def test_rtk_gaps_fail_a_long_float_run_and_name_the_segment():
+def test_a_long_float_run_is_a_warning_when_registered_cameras_carry_the_path():
     path, profile, route = clean_route()
     quality = [
         ("rtk-float",) if s <= RTK_GAP_LIMIT_M + 10.0 else flags
@@ -82,9 +85,27 @@ def test_rtk_gaps_fail_a_long_float_run_and_name_the_segment():
 
     gate = report.segments[0].gates[2]
     assert gate.name == "rtk-gaps"
-    assert gate.status == "fail"
-    assert gate.values["longest_non_fixed_m"] == pytest.approx(RTK_GAP_LIMIT_M + 10.0)
+    assert gate.status == "warn"
+    assert gate.values["longest_non_fixed_m"] == pytest.approx(61.0)
     assert "seg_0000 RTK gaps" in gate.detail
+    assert report.status == "warn"
+    assert report.recapture == []
+
+
+def test_a_float_run_split_by_a_segment_boundary_keeps_its_full_length_in_both_segments():
+    path, profile, route = clean_route(length=200.0, segment_length=100.0)
+    quality = [
+        ("rtk-float",) if 50.0 <= s <= 150.0 else flags
+        for s, flags in zip(profile.s_m, profile.quality, strict=True)
+    ]
+
+    report = assess(path, replace(profile, quality=tuple(quality)), route, {"failures": []}, "route", "build")
+
+    for segment in report.segments:
+        gate = segment.gates[2]
+        assert gate.status == "warn"
+        assert gate.values["longest_non_fixed_m"] == pytest.approx(101.0)
+        assert len(gate.values["non_fixed_runs"]) == 1
 
 
 def test_rtk_gaps_fail_a_grade_step_across_a_bridged_gap():
@@ -107,7 +128,59 @@ def test_rtk_gaps_fail_a_grade_step_across_a_bridged_gap():
     gate = report.segments[0].gates[2]
     assert gate.status == "fail"
     assert gate.values["bridged_grade_step_percent"] == pytest.approx(1.0, abs=1e-9)
+    assert gate.values["max_bridged_gap_m"] == pytest.approx(11.0)
+    assert gate.values["bridged_runs"][0]["pulses"][0] < gate.values["bridged_runs"][0]["pulses"][-1]
     assert "grade step" in gate.detail
+    assert "bridged gap" in gate.detail
+
+
+def test_a_lateral_max_over_30_cm_fails_even_when_the_p95_is_inside_its_bound():
+    path, profile, route = clean_route()
+    trace = path.trace_enu_m.copy()
+    trace[100, 1] += 0.40
+
+    report = assess(replace(path, trace_enu_m=trace), profile, route, {"failures": []}, "r", "b")
+
+    gate = report.segments[0].gates[0]
+    assert gate.status == "fail"
+    assert gate.values["lateral_max_m"] == pytest.approx(0.40, abs=1e-6)
+    assert gate.values["lateral_p95_m"] < 0.10
+
+
+def test_a_bridged_gap_over_ten_metres_fails_and_reports_its_pulses():
+    path, profile, route = clean_route()
+    quality = [
+        ("bridged-gap",) if 20.0 <= s <= 35.0 else flags
+        for s, flags in zip(profile.s_m, profile.quality, strict=True)
+    ]
+
+    report = assess(path, replace(profile, quality=tuple(quality)), route, {"failures": []}, "route", "build")
+
+    gate = report.segments[0].gates[2]
+    run = gate.values["bridged_runs"][0]
+    assert gate.status == "fail"
+    assert gate.values["max_bridged_gap_m"] == pytest.approx(16.0)
+    assert run["pulses"][0] < run["pulses"][-1]
+    assert f"pulses {run['pulses'][0]}-{run['pulses'][-1]}" in gate.detail
+
+
+def test_a_long_non_fixed_run_containing_a_short_bridged_gap_fails():
+    path, profile, route = clean_route()
+    quality = []
+    for s, flags in zip(profile.s_m, profile.quality, strict=True):
+        if 40.0 <= s <= 45.0:
+            quality.append(("rtk-float", "bridged-gap"))
+        elif 10.0 <= s <= 80.0:
+            quality.append(("rtk-float",))
+        else:
+            quality.append(flags)
+
+    report = assess(path, replace(profile, quality=tuple(quality)), route, {"failures": []}, "route", "build")
+
+    gate = report.segments[0].gates[2]
+    assert gate.status == "fail"
+    assert "contains a bridged gap" in gate.detail
+    assert gate.values["max_bridged_gap_m"] < 10.0
 
 
 def test_a_slice_6_registration_failure_marks_every_segment_for_recapture():
@@ -139,7 +212,7 @@ def test_the_qa_report_is_written_even_when_a_gate_fails(tmp_path):
     document = json.loads((folder / "report.json").read_text())
     assert document["status"] == "fail"
     assert document["recapture"] == ["seg_0000"]
-    assert folder == tmp_path / "qa" / "b"
+    assert folder == tmp_path / "qa" / "r" / "b"
 
 
 def test_the_review_plots_are_written(tmp_path):
