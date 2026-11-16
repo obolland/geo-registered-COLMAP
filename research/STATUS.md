@@ -237,3 +237,11 @@ The 274 m kink could be made comfortable at the cost of 75 cm of departure, whic
 - Path to road: seg_0001 is just over the p95 gates (3.58 cm vertical, 10.34 cm lateral) while seg_0000 passes. The smoothing bound is global; decide whether gates should use a global p95 or the path should be smoothed per segment with continuity constraints.
 - Grade shows peaks around plus or minus 15 percent in the 10 m window; check whether they are real road grade or noise before the app uses them for speed.
 - The loop endpoint separation of 19.95 m is a capture fact, not a pipeline fault; no loop flag was set.
+
+## Slice 7 decision (Olly, 2026-11-16)
+
+Merged with both field test 2 segments failing the comfort gate, because the gates flag real stretches correctly and the comfort model itself is unmeasured. Follow-up before the comfort gate is trusted (once the headset arrives):
+- Allow the path up to about 1 m from the capture line (the captured band) instead of 0.5 m, with a larger repair window: the real pull-overs needed 55-75 cm.
+- Treat genuine bends (the junction) as app bend-speed policy: report the slowest speed the geometry forces (speed profile limited by yaw acceleration too) and gate on that, rather than demanding the geometry be smoothed away.
+- Measure the 30 deg/s^2 yaw-acceleration limit and the 3 m/s^2 lateral limit on the headset.
+- Explain the 274 m and 420 m kinks (no known cause yet).
