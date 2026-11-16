@@ -1,7 +1,9 @@
 """Measures each camera's orientation on the rig from a reconstruction, relative to a reference camera,
 and writes a calibrated rig config that keeps the hand measurements alongside."""
 
+import json
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +12,9 @@ from georoute.rig import _RIG_FROM_CAMERA_LEVEL, Rig
 
 # A calibrated angle this far from the hand measurement points to a mix-up, not a measuring error.
 MAX_DISAGREEMENT_DEG = 15.0
+MIN_PULSES = 10
+# A rigid mount varies by hundredths of a degree (field test 2: 0.03-0.04); more means it moved.
+MAX_SPREAD_DEG = 1.0
 
 
 class CalibrationError(ValueError):
@@ -40,6 +45,8 @@ def calibrate_rotations(
 ) -> dict[str, dict]:
     """Each camera's rig_from_camera from the reconstruction, pulse by pulse relative to the reference
     camera, which keeps its configured orientation (it defines the rig's axes)."""
+    if not any(c == reference for _, c in poses):
+        raise CalibrationError(f"no registered images from the reference camera cam{reference}")
     rig_from_ref = rig.rig_from_camera(reference)
     out = {
         f"cam{reference}": {
@@ -54,16 +61,21 @@ def calibrate_rotations(
             for (p, c), (r, _) in poses.items()
             if c == camera and (p, reference) in poses
         ]
-        if not samples:
-            continue
+        if len(samples) < MIN_PULSES:
+            raise CalibrationError(
+                f"cam{camera} shares only {len(samples)} pulses with the reference, need {MIN_PULSES}"
+            )
         mean = _mean_rotation(samples)
         disagreement = _angle_deg(mean, rig.rig_from_camera(camera))
         if disagreement > MAX_DISAGREEMENT_DEG:
             raise CalibrationError(f"cam{camera} is {disagreement:.1f} degrees from its hand measurement")
+        spread = float(np.median([_angle_deg(mean, s) for s in samples]))
+        if spread > MAX_SPREAD_DEG:
+            raise CalibrationError(f"cam{camera}'s orientation varies by {spread:.2f} degrees across pulses")
         out[f"cam{camera}"] = {
             "yaw_pitch_roll_deg": yaw_pitch_roll(mean),
             "pulses": len(samples),
-            "spread_deg": float(np.median([_angle_deg(mean, s) for s in samples])),
+            "spread_deg": spread,
             "change_from_hand_deg": disagreement,
         }
     return out
@@ -83,7 +95,7 @@ def write_calibrated_rig(
         "# behind the lens front to the optical centre. hand_* keys are the original measurements.",
         "",
         f'schema = "{doc["schema"]}"',
-        f'name = "{doc["name"]}-calibrated"',
+        f"name = {_toml_value(doc['name'].removesuffix('-calibrated') + '-calibrated')}",
         f"measured = {str(doc['measured']).lower()}",
         "",
     ]
@@ -93,7 +105,7 @@ def write_calibrated_rig(
         lines.append("")
     lines += [
         "[calibration]",
-        f'source = "{source}"',
+        f"source = {_toml_value(source)}",
         f"reference = {reference}",
         f"axial_offset_m = {axial_offset_m:.4f}",
         "",
@@ -104,13 +116,15 @@ def write_calibrated_rig(
         axis = rig_from_camera(*angles)[:, 2]
         position = np.array(cam["position_in_rig_m"]) - axial_offset_m * axis
         lines += ["[[camera]]"] + [
-            f"{k} = {_toml_value(cam[k])}" for k in ("index", "role", "folder", "serial")
+            f"{k} = {_toml_value(cam[k])}" for k in ("index", "role", "folder", "serial") if k in cam
         ]
         lines += [
             f"position_in_rig_m = {_toml_value([round(float(x), 4) for x in position])}",
             f"yaw_pitch_roll_deg = {_toml_value([round(float(x), 2) for x in angles])}",
-            f"hand_position_in_rig_m = {_toml_value(cam['position_in_rig_m'])}",
-            f"hand_yaw_pitch_roll_deg = {_toml_value(cam['yaw_pitch_roll_deg'])}",
+            f"hand_position_in_rig_m = "
+            f"{_toml_value(cam.get('hand_position_in_rig_m', cam['position_in_rig_m']))}",
+            f"hand_yaw_pitch_roll_deg = "
+            f"{_toml_value(cam.get('hand_yaw_pitch_roll_deg', cam['yaw_pitch_roll_deg']))}",
             "",
         ]
     Path(out_path).write_text("\n".join(lines))
@@ -120,7 +134,20 @@ def _toml_value(value) -> str:
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, str):
-        return f'"{value}"'
+        return json.dumps(value)
     if isinstance(value, list | tuple):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     return repr(value)
+
+
+def with_orientations(rig: Rig, calibration: dict[str, dict]) -> Rig:
+    """The rig with each calibrated camera's orientation replaced, positions unchanged."""
+    cameras = tuple(
+        replace(
+            c, yaw_pitch_roll_deg=tuple(float(x) for x in calibration[f"cam{c.index}"]["yaw_pitch_roll_deg"])
+        )
+        if f"cam{c.index}" in calibration
+        else c
+        for c in rig.cameras
+    )
+    return replace(rig, cameras=cameras)

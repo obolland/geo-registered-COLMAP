@@ -2,12 +2,13 @@
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
 import pycolmap
 
-from georoute.colmap_report import gate, prior_residuals, rig_check
+from georoute.colmap_report import GATES, gate, prior_residuals, rig_check, scale_against_priors
 from georoute.rig import Rig, refine_priors
 
 # First-pass priors assume a level rig, so allow for the bike's lean and pitch moving the lever arm.
@@ -50,14 +51,15 @@ def _headings(images: list[dict]) -> list[np.ndarray]:
 
 def write_priors(db: pycolmap.Database, priors: dict[str, tuple[np.ndarray, np.ndarray]]) -> int:
     """Writes CARTESIAN position priors, with covariance, for every named image present in the database,
-    replacing any existing prior (feature extraction writes an empty one per image)."""
+    replacing every existing prior: feature extraction writes an empty one per image, and an image left
+    with that UNDEFINED placeholder makes the mapper refuse the mixed coordinate systems."""
     written = 0
-    existing = {p.corr_data_id.id: p for p in db.read_all_pose_priors()}
+    db.clear_pose_priors()
     for image in db.read_all_images():
         if image.name not in priors:
             continue
         centre, cov = priors[image.name]
-        prior = existing.get(image.image_id, pycolmap.PosePrior())
+        prior = pycolmap.PosePrior()
         prior.position = np.asarray(centre, float)
         prior.position_covariance = np.asarray(cov, float)
         prior.coordinate_system = pycolmap.PosePriorCoordinateSystem.CARTESIAN
@@ -65,10 +67,7 @@ def write_priors(db: pycolmap.Database, priors: dict[str, tuple[np.ndarray, np.n
             sensor_id=pycolmap.sensor_t(type=pycolmap.SensorType.CAMERA, id=image.camera_id),
             id=image.image_id,
         )
-        if image.image_id in existing:
-            db.update_pose_prior(prior)
-        else:
-            db.write_pose_prior(prior)
+        db.write_pose_prior(prior)
         written += 1
     return written
 
@@ -103,6 +102,9 @@ def prepare(
     db_path = workspace / "database.db"
     for stale in ("", "-shm", "-wal"):
         Path(f"{db_path}{stale}").unlink(missing_ok=True)
+    for stale in ("priors.json", "matching.json", "mapping.json", "report.json"):
+        (workspace / stale).unlink(missing_ok=True)
+    shutil.rmtree(workspace / "sparse", ignore_errors=True)
 
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "OPENCV"
@@ -117,6 +119,11 @@ def prepare(
         device=pycolmap.Device.cpu,
     )
 
+    with pycolmap.Database.open(db_path) as db:
+        extracted = {i.name for i in db.read_all_images()}
+    missing = sorted({i["path"] for i in images} - extracted)
+    if missing:
+        raise ValueError(f"{len(missing)} photos failed feature extraction, first {missing[0]}")
     priors = first_pass_priors(images, rig)
     with pycolmap.Database.open(db_path) as db:
         written = write_priors(db, priors)
@@ -183,23 +190,33 @@ class ReconstructionError(RuntimeError):
     pass
 
 
-def reconstruct(workspace, images_root, min_registered_fraction: float = 0.95, seed: int = 0) -> dict:
-    """Incremental mapping with the position priors, writing the model to workspace/sparse/0. Refuses if
-    the photos split into several models or too few register; mapping.json records the outcome either way."""
+def reconstruct(
+    workspace, images_root, min_registered_fraction: float = 0.95, seed: int = 0, mapper: str = "incremental"
+) -> dict:
+    """Maps the workspace and writes the model to workspace/sparse/0, in the priors' frame. "incremental"
+    uses the priors while mapping; "global" (much faster on long sequences, but it can't take priors) maps
+    freely and is then fitted to the priors by a similarity transform, for refine to tighten. Refuses if the
+    photos split into several models or too few register; mapping.json records the outcome either way."""
     workspace = Path(workspace)
-    options = pycolmap.IncrementalPipelineOptions()
-    options.use_prior_position = True
-    options.use_robust_loss_on_prior_position = True
-    options.multiple_models = True
-    options.random_seed = seed
     sparse = workspace / "sparse"
     sparse.mkdir(exist_ok=True)
-    models = pycolmap.incremental_mapping(workspace / "database.db", Path(images_root), sparse, options)
+    if mapper == "incremental":
+        options = pycolmap.IncrementalPipelineOptions()
+        options.use_prior_position = True
+        options.use_robust_loss_on_prior_position = True
+        options.multiple_models = True
+        options.random_seed = seed
+        models = pycolmap.incremental_mapping(workspace / "database.db", Path(images_root), sparse, options)
+    elif mapper == "global":
+        models = _global_mapping(workspace, Path(images_root), seed)
+    else:
+        raise ValueError(f"unknown mapper {mapper!r}")
     with pycolmap.Database.open(workspace / "database.db") as db:
         names = {i.image_id: i.name for i in db.read_all_images()}
     best = max(models.values(), key=lambda m: m.num_reg_images(), default=None)
     registered = {best.images[i].name for i in best.reg_image_ids()} if best else set()
     summary = {
+        "mapper": mapper,
         "images": len(names),
         "models": len(models),
         "model_sizes": sorted((m.num_reg_images() for m in models.values()), reverse=True),
@@ -218,20 +235,39 @@ def reconstruct(workspace, images_root, min_registered_fraction: float = 0.95, s
     return summary
 
 
-def refine(workspace, rig: Rig, tolerance_m: float = 1e-3, min_lateral_spread_m: float = 1.0) -> dict:
+# Refining poses doesn't need every 3D point: the best-observed ones pin them down, and a full adjustment of
+# millions of points took about an hour per round on the field test 2 loop.
+MAX_REFINE_POINTS = 200_000
+
+
+def refine(
+    workspace,
+    rig: Rig,
+    tolerance_m: float = 1e-3,
+    min_lateral_spread_m: float = 1.0,
+    max_points: int = MAX_REFINE_POINTS,
+    holdout_every: int = 10,
+) -> dict:
     """Moves each prior from the nominal-attitude guess to the camera centre implied by the reconstructed
-    rotation and the rig geometry, re-adjusting the model against the new priors until they settle.
-    Writes sparse/refined, and updates priors.json and the database priors."""
+    rotation and the rig geometry, re-adjusting the poses against the new priors until they settle. The
+    adjustment runs on the max_points longest-tracked points; the refined poses then go back into the full
+    model, whose points are re-adjusted with the poses held fixed. Writes sparse/refined, and updates
+    priors.json and the database priors. Every holdout_every-th pulse is left out of the adjustment, so its
+    distance from its RTK-derived position is an honest accuracy measure (0 disables the hold-out)."""
     workspace = Path(workspace)
+    full = pycolmap.Reconstruction(workspace / "sparse" / "0")
     model = pycolmap.Reconstruction(workspace / "sparse" / "0")
+    points_used = _keep_longest_tracks(model, max_points)
     record = json.loads((workspace / "priors.json").read_text())
     ids = {model.images[i].name: i for i in model.reg_image_ids()}
     names = [n for n in record if n in ids]
     antenna = {n: (record[n]["camera"], np.array(record[n]["antenna_enu"])) for n in names}
     variances = {n: np.diag([record[n]["sigma_h_m"] ** 2] * 2 + [record[n]["sigma_v_m"] ** 2]) for n in names}
+    held_out = {n for n in names if holdout_every and record[n]["pulse"] % holdout_every == 0}
+    used = [n for n in names if n not in held_out]
 
     def align(centres: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        _prior_bundle_adjustment(model, {ids[n]: (centres[n], variances[n]) for n in names})
+        _prior_bundle_adjustment(model, {ids[n]: (centres[n], variances[n]) for n in used})
         return {n: model.images[ids[n]].cam_from_world().rotation.matrix().T for n in names}
 
     result = refine_priors(
@@ -242,16 +278,55 @@ def refine(workspace, rig: Rig, tolerance_m: float = 1e-3, min_lateral_spread_m:
         min_lateral_spread_m=min_lateral_spread_m,
         initial={n: np.array(record[n]["centre"]) for n in names},
     )
-    _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in names})
+    _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in used})
+    for frame_id in model.reg_frame_ids():
+        full.frame(frame_id).rig_from_world = model.frame(frame_id).rig_from_world
+    _points_only_adjustment(full)
     (workspace / "sparse" / "refined").mkdir(parents=True, exist_ok=True)
-    model.write(workspace / "sparse" / "refined")
+    full.write(workspace / "sparse" / "refined")
     for n in names:
-        record[n].update(centre=result.priors[n].tolist(), covariance=variances[n].tolist(), refined=True)
+        record[n].update(
+            centre=result.priors[n].tolist(),
+            covariance=variances[n].tolist(),
+            refined=True,
+            held_out=n in held_out,
+        )
     (workspace / "priors.json").write_text(json.dumps(record, indent=1))
     with pycolmap.Database.open(workspace / "database.db") as db:
         db.clear_pose_priors()
         write_priors(db, {n: (result.priors[n], variances[n]) for n in names})
-    return {"iterations": result.iterations, "last_change_m": result.last_change_m, "images": len(names)}
+    return {
+        "iterations": result.iterations,
+        "last_change_m": result.last_change_m,
+        "images": len(names),
+        "points_used": points_used,
+        "held_out": len(held_out),
+    }
+
+
+def _keep_longest_tracks(model: pycolmap.Reconstruction, max_points: int) -> int:
+    ids = list(model.point3D_ids())
+    if len(ids) <= max_points:
+        return len(ids)
+    ids.sort(key=lambda i: model.points3D[i].track.length(), reverse=True)
+    for point_id in ids[max_points:]:
+        model.delete_point3D(point_id)
+    return max_points
+
+
+def _points_only_adjustment(model: pycolmap.Reconstruction):
+    config = pycolmap.BundleAdjustmentConfig()
+    for image_id in model.reg_image_ids():
+        config.add_image(image_id)
+    for frame_id in model.reg_frame_ids():
+        config.set_constant_rig_from_world_pose(frame_id)
+    for camera_id in model.cameras:
+        config.set_constant_cam_intrinsics(camera_id)
+    summary = pycolmap.create_default_bundle_adjuster(
+        pycolmap.BundleAdjustmentOptions(), config, model
+    ).solve()
+    if not summary.is_solution_usable():
+        raise ReconstructionError(f"point re-adjustment failed: {summary.brief_report()}")
 
 
 def _prior_bundle_adjustment(
@@ -278,7 +353,9 @@ def _prior_bundle_adjustment(
         pose_priors,
         model,
     )
-    adjuster.solve()
+    summary = adjuster.solve()
+    if not summary.is_solution_usable():
+        raise ReconstructionError(f"prior bundle adjustment failed: {summary.brief_report()}")
 
 
 def report(workspace, rig: Rig, reference: int = 2) -> dict:
@@ -287,15 +364,34 @@ def report(workspace, rig: Rig, reference: int = 2) -> dict:
     workspace = Path(workspace)
     which, poses, centres, record, model = _model_poses(workspace)
     priors = {n: np.array(r["centre"]) for n, r in record.items()}
-    residuals = prior_residuals(priors, centres, {n: r["fixed"] for n, r in record.items()})
+    held_out = {n for n, r in record.items() if r.get("held_out")}
+    residuals = prior_residuals(
+        priors, centres, {n: r["fixed"] and n not in held_out for n, r in record.items()}
+    )
+    holdout = (
+        prior_residuals(priors, centres, {n: record[n]["fixed"] for n in held_out}) if held_out else None
+    )
     rig_result = rig_check(poses, rig, reference)
+    cameras = sorted({f"cam{r['camera']}" for r in record.values()})
+    order = {n: r["pulse"] for n, r in record.items()}
     out = {
         "model": which,
+        "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured},
+        "gates": GATES,
+        "registration": {
+            c: {
+                "photos": sum(n.startswith(f"{c}/") for n in record),
+                "registered": sum(n.startswith(f"{c}/") for n in centres),
+            }
+            for c in cameras
+        },
+        "scale_against_rtk": scale_against_priors(priors, centres, order, f"cam{reference}"),
         "mapping": json.loads((workspace / "mapping.json").read_text()),
         "mean_reprojection_error_px": model.compute_mean_reprojection_error(),
         "prior_residuals": residuals,
-        "rig": rig_result,
-        "failures": gate(residuals, rig_result),
+        "holdout_residuals": holdout,
+        "rig_check": rig_result,
+        "failures": gate(holdout or residuals, rig_result, cameras),
     }
     (workspace / "report.json").write_text(json.dumps(out, indent=1))
     return out
@@ -320,12 +416,47 @@ def _model_poses(workspace: Path):
 
 def calibrate_rig(workspace, rig_path, out_path, reference: int = 2) -> dict:
     """Calibrated rig config from the workspace's reconstruction (see calibrate.py)."""
-    from georoute.calibrate import calibrate_rotations, write_calibrated_rig
+    from georoute.calibrate import calibrate_rotations, with_orientations, write_calibrated_rig
     from georoute.rig import load_rig
 
     rig = load_rig(rig_path)
     _, poses, _, _, _ = _model_poses(Path(workspace))
     calibration = calibrate_rotations(poses, rig, reference)
-    offset = rig_check(poses, rig, reference)["axial_offset_m"]
+    offset = rig_check(poses, with_orientations(rig, calibration), reference)["axial_offset_m"]
     write_calibrated_rig(rig_path, out_path, calibration, reference, offset, source=str(workspace))
     return {"cameras": calibration, "axial_offset_m": offset}
+
+
+# A global model is fitted to the priors by RANSAC; an image this far from its prior is an outlier.
+ALIGNMENT_MAX_ERROR_M = 0.5
+
+
+def _global_mapping(workspace: Path, images_root: Path, seed: int) -> dict[int, pycolmap.Reconstruction]:
+    options = pycolmap.GlobalPipelineOptions()
+    options.random_seed = seed
+    options.mapper.random_seed = seed
+    options.mapper.global_positioning.use_gpu = False
+    if hasattr(options.mapper.bundle_adjustment.ceres, "use_gpu"):
+        options.mapper.bundle_adjustment.ceres.use_gpu = False
+    sparse = workspace / "sparse"
+    models = pycolmap.global_mapping(workspace / "database.db", images_root, sparse, options)
+    with pycolmap.Database.open(workspace / "database.db") as db:
+        names = {i.image_id: i.name for i in db.read_all_images()}
+        priors = {
+            names[p.corr_data_id.id]: np.asarray(p.position)
+            for p in db.read_all_pose_priors()
+            if p.coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
+        }
+    ransac = pycolmap.RANSACOptions()
+    ransac.max_error = ALIGNMENT_MAX_ERROR_M
+    for index, model in models.items():
+        common = [model.images[i].name for i in model.reg_image_ids() if model.images[i].name in priors]
+        sim3 = pycolmap.align_reconstruction_to_locations(
+            model, common, np.array([priors[n] for n in common]), min_common_images=3, ransac_options=ransac
+        )
+        if sim3 is None:
+            raise ReconstructionError(f"global model {index} couldn't be fitted to the priors")
+        model.transform(sim3)
+        (sparse / str(index)).mkdir(parents=True, exist_ok=True)
+        model.write(sparse / str(index))
+    return models

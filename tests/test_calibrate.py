@@ -47,3 +47,35 @@ def test_the_calibrated_rig_loads_and_keeps_the_hand_measurements(tmp_path):
     np.testing.assert_allclose(
         calibrated.camera(1).position_in_rig_m, rig.camera(1).position_in_rig_m - 0.02 * axis, atol=1e-3
     )
+
+
+def test_calibrating_a_calibrated_rig_keeps_the_original_hand_measurements(tmp_path):
+    rig = load_rig(EXAMPLE)
+    first, second = tmp_path / "c1.toml", tmp_path / "c2.toml"
+    calibration = calibrate_rotations(_poses(rig, yaw_error_deg=(0, -9.5)), rig, reference=2)
+    write_calibrated_rig(EXAMPLE, first, calibration, reference=2, axial_offset_m=0.02, source="one")
+    again = calibrate_rotations(_poses(load_rig(first)), load_rig(first), reference=2)
+    write_calibrated_rig(first, second, again, reference=2, axial_offset_m=0.0, source="two")
+    text = second.read_text()
+    assert f"hand_yaw_pitch_roll_deg = {[float(x) for x in rig.camera(0).yaw_pitch_roll_deg]}" in text
+    assert 'name = "handlebar-4x100d-calibrated"' in text
+
+
+def test_calibration_needs_enough_consistent_pulses():
+    rig = load_rig(EXAMPLE)
+    few = {k: v for k, v in _poses(rig).items() if k[0] < 5}
+    with pytest.raises(CalibrationError, match="pulses"):
+        calibrate_rotations(few, rig, reference=2)
+    with pytest.raises(CalibrationError, match="reference"):
+        calibrate_rotations({k: v for k, v in _poses(rig).items() if k[1] != 2}, rig, reference=2)
+
+
+def test_the_optical_centre_offset_is_estimated_with_the_calibrated_orientations():
+    from georoute.calibrate import with_orientations
+    from georoute.colmap_report import rig_check
+
+    rig = load_rig(EXAMPLE)
+    poses = _poses(rig, axial_offset_m=0.025, yaw_error_deg=(0, -9.5))
+    calibrated = with_orientations(rig, calibrate_rotations(poses, rig, reference=2))
+    assert rig_check(poses, calibrated, reference=2)["axial_offset_m"] == pytest.approx(0.025, abs=1e-6)
+    assert abs(rig_check(poses, rig, reference=2)["axial_offset_m"] - 0.025) > 1e-4  # hand angles bias it

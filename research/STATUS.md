@@ -125,3 +125,26 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 - Subset (pulses 100-250, 604 photos): one model, all registered, 0.98 px; 8269 verified pairs including strong cross-camera pairs.
 - The hand-measured side-camera yaw was 50 degrees but the photos say 40.5 and 39.8 (probably measured from the bar); calibration fixes it, and the optical centre sits about 24 mm behind the lens front. After calibration: horizontal prior residual p95 4.1-4.5 cm (passes), rig agreement 0.6-1.3 cm and 0.03 degrees.
 - Open: vertical prior residual p95 about 6 cm, from one stretch (pulses 136-158) where the reconstruction sits up to 8 cm below RTK heights that Doppler supports; that stretch has weaker ties (about 1860 points per photo against 2600-3000). Full session (loop closure) running to see whether it persists.
+
+## Slice 6: full session 1 and lessons (2026-11-15)
+
+- Olly: prioritise accuracy and correctness over speed; production runs on a cloud GPU. Speed-ups only where verified not to cost accuracy.
+- Incremental mapping of 2464 photos on this Mac ran 4.5 h without finishing, then was stopped for memory (two mappers in parallel on 16 GB was my mistake). The global mapper registered all 2464 in one model in 60 min; fitted to the priors by RANSAC Sim3, then refined.
+- Full session 1 (global): reprojection 0.97 px, scale against the RTK path 0.99993, rig within 0.6-1.3 cm and 0.04-0.12 degrees, vertical prior residual p95 4.1-4.5 cm (loop closure fixed the subset's dip), horizontal p50 2.3-2.5 cm but p95 5.6-6.1 cm (gate 5 cm), with no mean bias.
+- The horizontal tail sits in three stretches with visible causes, not RTK (hAcc 14-15 mm throughout): close ivy hedge and bare branches (pulses 138-151), parked vans and cars close to the cameras (430-468), and a sharp turn at a junction with plain tarmac (589-597).
+- Lessons for the pipeline: vehicle masking should also remove bad matches; the gate should report weak stretches rather than one route-wide p95; refine's full bundle adjustment took about an hour per round, so a point-sampled refine is under test against the full result; Auto ISO gives visibly different exposure between cameras, so capture should fix exposure across cameras.
+
+## Requirement: hardware-configurable pipeline (Olly, 2026-11-15)
+
+Adding cameras, changing camera type or changing rig must be a config change, not a code change. Already config: rig layout, folders, serials, positions, angles, antenna, curtain travel, calibration. Still hard-coded, to move into the rig config in a dedicated slice after slice 6: the 4-camera count (session, matching, rig validation, CLI; more cameras also needs a logger v2 contract), the COLMAP camera model per camera, Canon-specific rules (IMG_9999 rollover, 30-500 ms shutter delay, exposure limits), and the reference camera (cam2).
+
+## Refine: sampled vs full, judged on held-out pulses (2026-11-16)
+
+Same global model and first-pass priors, every 10th pulse held out (248 photos):
+
+| | Time | Held-out horizontal p50 / p95 | Held-out vertical p50 / p95 | Scale vs RTK path |
+|---|---|---|---|---|
+| Sampled (200k longest tracks) | 75 min | 1.75-2.08 / 3.7-5.2 cm | 1.28-1.35 / 3.4-4.0 cm | 0.99984 |
+| Full (979k points) | 179 min | 2.17-2.47 / 5.6-6.5 cm | 1.33-1.43 / 3.9-4.1 cm | 0.99994 |
+
+Sampling costs no accuracy on held-out pulses and is slightly better, plausibly because the longest tracks are the most reliable matches and short tracks carry the bad ones (vegetation, reflections). Adopted as the default. Caveats: a single held-out pulse sits between priored neighbours 0.8 m away, so it tests local consistency more than independence (holding out whole stretches would be stronger); the path-length scale ratio is noise-biased at the 1e-4 level. Gate: only cam0 horizontal p95 (5.2 cm) fails on the sampled run.

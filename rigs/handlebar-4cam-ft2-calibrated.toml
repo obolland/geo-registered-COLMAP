@@ -1,0 +1,62 @@
+# Calibrated from /Users/olly/fieldtest2/colmap/subset: orientations relative to cam2, positions moved 20 mm
+# behind the lens front to the optical centre. hand_* keys are the original measurements.
+
+schema = "georoute.rig/1.0.0"
+name = "handlebar-4x100d-ft2-calibrated"
+measured = true
+
+[reference]
+description = "centre of the antenna base on the bar's top face"
+height_above_road_m = 1.18
+
+[antenna]
+arp_in_rig_m = [0.0, 0.0, 0.0]
+phase_centre_offset_m = [0.0, 0.0, 0.0]
+
+[timing]
+curtain_travel_ms = 0.0
+
+[calibration]
+source = "/Users/olly/fieldtest2/colmap/subset"
+reference = 2
+axial_offset_m = 0.0203
+
+[[camera]]
+index = 0
+role = "right side, angled forward"
+folder = "cam0"
+serial = "363073016649"
+position_in_rig_m = [0.3508, 0.0775, 0.035]
+yaw_pitch_roll_deg = [-40.45, 0.01, 0.34]
+hand_position_in_rig_m = [0.364, 0.093, 0.035]
+hand_yaw_pitch_roll_deg = [-50.0, -0.3, 0.0]
+
+[[camera]]
+index = 1
+role = "forward-right"
+folder = "cam1"
+serial = "013070043618"
+position_in_rig_m = [0.1231, 0.1017, 0.0347]
+yaw_pitch_roll_deg = [-2.48, 0.81, -0.17]
+hand_position_in_rig_m = [0.124, 0.122, 0.035]
+hand_yaw_pitch_roll_deg = [0.0, 0.2, 0.0]
+
+[[camera]]
+index = 2
+role = "forward-left"
+folder = "cam2"
+serial = "353073007602"
+position_in_rig_m = [-0.125, 0.1017, 0.0348]
+yaw_pitch_roll_deg = [0.0, 0.6, 0.0]
+hand_position_in_rig_m = [-0.125, 0.122, 0.035]
+hand_yaw_pitch_roll_deg = [0.0, 0.6, 0.0]
+
+[[camera]]
+index = 3
+role = "left side, angled forward"
+folder = "cam3"
+serial = "023071108155"
+position_in_rig_m = [-0.352, 0.0744, 0.035]
+yaw_pitch_roll_deg = [39.76, -0.01, -0.33]
+hand_position_in_rig_m = [-0.365, 0.09, 0.035]
+hand_yaw_pitch_roll_deg = [50.0, -0.8, 0.0]

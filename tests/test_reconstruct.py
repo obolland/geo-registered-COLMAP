@@ -214,7 +214,7 @@ def test_refine_moves_priors_from_the_antenna_to_the_cameras(tmp_path):
             "covariance": (np.eye(3) * 1e-4).tolist(),
         }
     (tmp_path / "ws" / "priors.json").write_text(json.dumps(record))
-    result = refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0)
+    result = refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0, holdout_every=0)
     assert result["iterations"] <= 4
     refined = json.loads((tmp_path / "ws" / "priors.json").read_text())
     for image in truth.images.values():
@@ -244,3 +244,138 @@ def test_priors_replace_the_placeholders_feature_extraction_writes(tmp_path):
         (prior,) = db.read_all_pose_priors()
         np.testing.assert_allclose(prior.position, [1.0, 2.0, 3.0])
         assert prior.coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
+
+
+def test_images_without_a_prior_lose_the_extraction_placeholder(tmp_path):
+    with pycolmap.Database.open(tmp_path / "database.db") as db:
+        camera_id = db.write_camera(pycolmap.Camera.create_from_model_name(1, "OPENCV", 4000.0, 5184, 3456))
+        for name in ("cam0/a.JPG", "cam0/b.JPG"):
+            image_id = db.write_image(pycolmap.Image(name=name, camera_id=camera_id))
+            placeholder = pycolmap.PosePrior()
+            placeholder.corr_data_id = pycolmap.data_t(
+                sensor_id=pycolmap.sensor_t(type=pycolmap.SensorType.CAMERA, id=camera_id), id=image_id
+            )
+            db.write_pose_prior(placeholder)
+        write_priors(db, {"cam0/a.JPG": (np.zeros(3), np.eye(3) * 1e-4)})
+        priors = db.read_all_pose_priors()
+        assert len(priors) == 1
+        assert priors[0].coordinate_system == pycolmap.PosePriorCoordinateSystem.CARTESIAN
+
+
+def test_prepare_refuses_photos_that_failed_to_extract(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images" / "cam1" / "IMG_0002.JPG").write_bytes(b"not a jpeg")
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    with pytest.raises(ValueError, match="cam1/IMG_0002.JPG"):
+        prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
+
+
+def test_prepare_clears_results_from_an_earlier_run(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    stale = tmp_path / "ws" / "sparse" / "refined"
+    stale.mkdir(parents=True)
+    (tmp_path / "ws" / "report.json").write_text("{}")
+    prepare(tmp_path / "images.json", tmp_path / "images", tmp_path / "ws", rig)
+    assert not (tmp_path / "ws" / "sparse").exists() and not (tmp_path / "ws" / "report.json").exists()
+
+
+def test_global_mapping_is_aligned_to_the_priors(tmp_path):
+    from georoute.reconstruct import reconstruct
+
+    truth = _synthetic_workspace(tmp_path, frames=15)
+    summary = reconstruct(tmp_path / "ws", tmp_path, mapper="global")
+    assert summary["mapper"] == "global" and summary["registered"] == 15
+    model = pycolmap.Reconstruction(tmp_path / "ws" / "sparse" / "0")
+    for image in truth.images.values():
+        mine = model.find_image_with_name(image.name)
+        np.testing.assert_allclose(mine.projection_center(), image.projection_center(), atol=0.05)
+
+
+def test_refine_on_a_sample_of_points_keeps_the_full_model(tmp_path):
+    import json
+
+    from georoute.reconstruct import refine
+    from georoute.rig import Camera, Rig
+
+    truth = _synthetic_workspace(tmp_path)
+    (tmp_path / "ws" / "sparse" / "0").mkdir(parents=True)
+    truth.write(tmp_path / "ws" / "sparse" / "0")
+    rig = Rig(
+        "synthetic",
+        True,
+        (Camera(0, "", "cam0", None, np.array([0.3, 0.1, 0.0]), (0.0, 0.0, 0.0)),),
+        np.array([0.0, 0.0, 0.0]),
+        1.0,
+        0.0,
+        "x",
+    )
+    record = {}
+    for image in truth.images.values():
+        world_from_rig = image.cam_from_world().rotation.matrix().T @ rig.rig_from_camera(0).T
+        antenna = image.projection_center() - world_from_rig @ rig.camera(0).position_in_rig_m
+        record[image.name] = {
+            "camera": 0,
+            "antenna_enu": antenna.tolist(),
+            "sigma_h_m": 0.01,
+            "sigma_v_m": 0.01,
+            "centre": antenna.tolist(),
+            "covariance": (np.eye(3) * 1e-4).tolist(),
+        }
+    (tmp_path / "ws" / "priors.json").write_text(json.dumps(record))
+    summary = refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0, max_points=150, holdout_every=0)
+    assert summary["points_used"] == 150
+    refined = pycolmap.Reconstruction(tmp_path / "ws" / "sparse" / "refined")
+    assert refined.num_points3D() == truth.num_points3D()
+    for image in truth.images.values():
+        np.testing.assert_allclose(
+            refined.find_image_with_name(image.name).projection_center(), image.projection_center(), atol=0.01
+        )
+
+
+def test_refine_holds_out_every_nth_pulse_and_report_gates_on_them(tmp_path):
+    import json
+
+    from georoute.reconstruct import refine
+    from georoute.rig import Camera, Rig
+
+    truth = _synthetic_workspace(tmp_path, frames=12)
+    (tmp_path / "ws" / "sparse" / "0").mkdir(parents=True)
+    truth.write(tmp_path / "ws" / "sparse" / "0")
+    rig = Rig(
+        "synthetic",
+        True,
+        (Camera(0, "", "cam0", None, np.array([0.3, 0.1, 0.0]), (0.0, 0.0, 0.0)),),
+        np.array([0.0, 0.0, 0.0]),
+        1.0,
+        0.0,
+        "x",
+    )
+    record = {}
+    for k, image in enumerate(sorted(truth.images.values(), key=lambda i: i.name)):
+        world_from_rig = image.cam_from_world().rotation.matrix().T @ rig.rig_from_camera(0).T
+        antenna = image.projection_center() - world_from_rig @ rig.camera(0).position_in_rig_m
+        record[image.name] = {
+            "camera": 0,
+            "pulse": k,
+            "fixed": True,
+            "antenna_enu": antenna.tolist(),
+            "sigma_h_m": 0.01,
+            "sigma_v_m": 0.01,
+            "centre": antenna.tolist(),
+            "covariance": (np.eye(3) * 1e-4).tolist(),
+        }
+    (tmp_path / "ws" / "priors.json").write_text(json.dumps(record))
+    assert refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0, holdout_every=3)["held_out"] == 4
+    refined = json.loads((tmp_path / "ws" / "priors.json").read_text())
+    assert sum(r["held_out"] for r in refined.values()) == 4

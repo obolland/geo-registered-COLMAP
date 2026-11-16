@@ -66,9 +66,21 @@ def rig_check(poses: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]], rig: 
 GATES = {"prior_p95_m": 0.05, "rig_translation_m": 0.02, "rig_angle_deg": 2.0}
 
 
-def gate(residuals: dict, rig: dict) -> list[str]:
-    """Reasons the reconstruction fails its gates (empty when it passes)."""
-    failures = []
+MIN_RIG_PULSES = 10
+
+
+def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) -> list[str]:
+    """Reasons the reconstruction fails its gates (empty when it passes). A camera with nothing to check
+    fails rather than passing by default."""
+    failures = [f"{c} has no registered images" for c in expected_cameras or [] if c not in residuals]
+    failures += [
+        f"{c} has no RTK-fixed images to check against" for c, r in residuals.items() if not r.get("images")
+    ]
+    failures += [
+        f"{c} shares only {r['pulses']} pulses with {rig.get('reference', 'the reference')}"
+        for c, r in rig["cameras"].items()
+        if r["pulses"] < MIN_RIG_PULSES
+    ]
     for camera, r in residuals.items():
         for axis in ("horizontal", "vertical"):
             value = r.get(f"{axis}_p95_m")
@@ -83,3 +95,17 @@ def gate(residuals: dict, rig: dict) -> list[str]:
         if r["angle_error_deg"] > GATES["rig_angle_deg"]:
             failures.append(f"{camera} points {r['angle_error_deg']:.1f} degrees from its rig orientation")
     return failures
+
+
+def scale_against_priors(
+    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], order: dict[str, int], camera: str
+) -> float | None:
+    """Reconstructed path length over the prior path length, along one camera's photos in pulse order."""
+    names = sorted((n for n in priors if n.startswith(f"{camera}/") and n in centres), key=order.get)
+    if len(names) < 2:
+        return None
+    prior_length = sum(np.linalg.norm(priors[b] - priors[a]) for a, b in zip(names, names[1:], strict=False))
+    model_length = sum(
+        np.linalg.norm(centres[b] - centres[a]) for a, b in zip(names, names[1:], strict=False)
+    )
+    return float(model_length / prior_length) if prior_length > 0 else None
