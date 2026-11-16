@@ -124,6 +124,7 @@ def test_a_failing_registration_gate_still_publishes_the_route_marked_for_recapt
     route = json.loads((Path(summary["package"]) / "route.json").read_text())
     assert route["qa"]["status"] == "fail"
     assert route["qa"]["recapture"] == summary["recapture"]
+    assert all("gate-failed" in segment["quality"] for segment in route["segments"])
 
 
 def test_a_missing_colmap_report_writes_a_refusal_qa_report_and_no_package(tmp_path, monkeypatch):

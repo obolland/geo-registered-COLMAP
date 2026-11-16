@@ -4,6 +4,7 @@ rider path, the distance profile, per-segment QA, and the package itself."""
 import json
 import platform
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -124,6 +125,17 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
             "trace_points": int(len(path.trace_s_m)),
         },
     )
+    failed = set(qa.recapture)
+    if failed:
+        route = replace(
+            route,
+            segments=tuple(
+                replace(segment, quality=tuple(sorted({*segment.quality, "gate-failed"})))
+                if segment.seg_id in failed
+                else segment
+                for segment in route.segments
+            ),
+        )
     parameters = {
         "segment_length_m": float(segment_length_m),
         "path_step_m": PATH_STEP_M,
