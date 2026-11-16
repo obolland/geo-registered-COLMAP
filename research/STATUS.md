@@ -154,7 +154,7 @@ Sampling costs no accuracy on held-out pulses and is slightly better, plausibly 
 
 ## Slice 7 build (2026-11-16)
 
-Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 443 tests pass; `ruff check .` clean.
+Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 446 tests pass; `ruff check .` clean.
 
 ### Real run
 
@@ -215,7 +215,7 @@ The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the thre
 - The real build uses `out/s1-v120/images.json` for the schema reason above; the strict 1.2.0 check has no compatibility path.
 - Per review decisions: horizontal smoothing is comfort-first with a 0.5 m lateral departure cap, vertical keeps a 0.03 m p95 bound, lateral p95 is reported rather than gated, and a long non-fixed RTK run is a warning unless it contains a bridged gap. All gate thresholds are recorded as Measure.
 - The trace-placement fix above was found by the real run and is now covered by a heavy-weave regression test.
-- After this real run, horizontal smoothing was changed again to the comfort-first objective described above: local spline weight reduction, 0.5 m departure cap, lateral p95 reported rather than gated, thresholds 1.1.0. The gate table and build outputs above predate that change; a rerun is pending review.
+- After this real run, horizontal smoothing was changed again to the comfort-first objective described above: a local window around each violation is re-targeted to the trace with lowered weights while the rest is anchored to the current fit, s stays fixed, the departure cap is 0.5 m, lateral p95 is reported rather than gated, and thresholds are 1.1.0. The gate table and build outputs above predate that change; a rerun is pending review.
 
 ### Open questions
 
