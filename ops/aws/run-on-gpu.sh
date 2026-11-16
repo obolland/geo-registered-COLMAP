@@ -8,7 +8,7 @@ set -euo pipefail
 
 PROFILE=${GEOROUTE_AWS_PROFILE:-splat}
 REGION=eu-west-2
-INSTANCE=${GEOROUTE_INSTANCE:-i-00779ffa487aebde0}
+INSTANCE=${GEOROUTE_INSTANCE:-i-04f3833f3a68627d6}
 BUCKET=georoute-splat-data-086341361260
 
 script=$1

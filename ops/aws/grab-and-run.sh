@@ -15,11 +15,11 @@ set -uo pipefail
 
 PROFILE=${GEOROUTE_AWS_PROFILE:-splat}
 REGION=eu-west-2
-INSTANCE=i-00779ffa487aebde0
+INSTANCE=${GEOROUTE_INSTANCE:-i-04f3833f3a68627d6}
 IMAGE=ami-07b4055656e0194ff
 SECURITY_GROUP=sg-027c5a2203a0abc9a
 INSTANCE_PROFILE=georoute-splat-ec2
-ZONES=(eu-west-2a eu-west-2b eu-west-2c)
+read -r -a ZONES <<<"${GEOROUTE_ZONES:-eu-west-2a eu-west-2b eu-west-2c}"
 declare -A SUBNETS=([eu-west-2b]=subnet-b965e2f5 [eu-west-2c]=subnet-d55e6abc)
 RETRY_SECONDS=${GEOROUTE_RETRY_SECONDS:-900}
 # Fresh-instance mode: with GEOROUTE_LAUNCH_IMAGE set, every zone launches a new instance from that image
