@@ -7,6 +7,8 @@ dependencies = [
     "matplotlib>=3.11.2",
     "numpy>=2.1",
     "pycolmap==4.2.1",
+    "pyproj>=3.8.0",
+    "scipy>=1.18.1",
 ]
 
 [project.scripts]
@@ -14,6 +16,7 @@ georoute = "georoute.cli:main"
 
 [dependency-groups]
 dev = [
+    "jsonschema>=4.26.0",
     "pillow>=13.0.0",
     "pytest>=8",
     "ruff>=0.8",
