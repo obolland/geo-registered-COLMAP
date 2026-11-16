@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/obolland/geo-registered-COLMAP/schemas/route-1.0.0.json",
+  "title": "georoute route manifest",
+  "description": "The app's only entry point: route-global metadata, segment origins and neighbours, and the QA summary. Compatibility: 1.y minor versions only add optional fields, so readers must ignore unknown fields; required fields and their meanings do not change within 1.x.",
+  "type": "object",
+  "required": [
+    "schema",
+    "route_id",
+    "build_id",
+    "datum",
+    "geoid",
+    "distance_m",
+    "loop",
+    "segments",
+    "splats",
+    "app_defaults",
+    "qa",
+    "provenance"
+  ],
+  "properties": {
+    "schema": {"const": "georoute.route/1.0.0"},
+    "route_id": {"type": "string", "pattern": "^(?!\\.\\.?$)[A-Za-z0-9._-]+$"},
+    "build_id": {"type": "string", "pattern": "^(?!\\.\\.?$)[A-Za-z0-9._-]+$"},
+    "datum": {"type": "string", "minLength": 1},
+    "geoid": {
+      "type": "object",
+      "required": ["name", "grid", "sha256", "datum"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "grid": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "datum": {"type": "string", "minLength": 1}
+      }
+    },
+    "distance_m": {"type": "number", "exclusiveMinimum": 0},
+    "loop": {"type": "boolean"},
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/segment"}
+    },
+    "splats": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/splat"}
+    },
+    "app_defaults": {
+      "type": "object",
+      "required": ["design_speed_mps", "corridor_measured"],
+      "properties": {
+        "design_speed_mps": {"type": "number", "exclusiveMinimum": 0},
+        "corridor_measured": {"type": "boolean"},
+        "corridor_left_m": {"type": "number", "minimum": 0},
+        "corridor_right_m": {"type": "number", "minimum": 0}
+      }
+    },
+    "qa": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["pass", "warn", "fail", "not-run"]}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["sessions", "rig_sha256", "pipeline_commit", "tool_versions", "parameters"],
+      "properties": {
+        "sessions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "rig_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "pipeline_commit": {"type": "string", "minLength": 1},
+        "git_dirty": {"type": ["boolean", "null"]},
+        "tool_versions": {
+          "type": "object",
+          "required": ["georoute", "python", "numpy", "scipy", "pyproj", "pycolmap"],
+          "additionalProperties": {"type": "string"}
+        },
+        "parameters": {"type": "object", "minProperties": 1}
+      }
+    }
+  },
+  "$defs": {
+    "s_range": {
+      "type": "array",
+      "prefixItems": [{"type": "number", "minimum": 0}, {"type": "number", "minimum": 0}],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "origin": {
+      "type": "object",
+      "required": ["lat_deg", "lon_deg", "h_m", "ecef"],
+      "properties": {
+        "lat_deg": {"type": "number", "minimum": -90, "maximum": 90},
+        "lon_deg": {"type": "number", "minimum": -180, "maximum": 180},
+        "h_m": {"type": "number"},
+        "ecef": {
+          "type": "array",
+          "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "bounds_local": {
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": {
+          "type": "array",
+          "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "max": {
+          "type": "array",
+          "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}],
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "required": [
+        "seg_id",
+        "s_range",
+        "origin",
+        "bounds_local",
+        "neighbours",
+        "session_id",
+        "session_join",
+        "corridor_left_m",
+        "corridor_right_m",
+        "quality",
+        "path",
+        "profile"
+      ],
+      "properties": {
+        "seg_id": {"type": "string", "pattern": "^seg_[0-9]{4}$"},
+        "s_range": {"$ref": "#/$defs/s_range"},
+        "origin": {"$ref": "#/$defs/origin"},
+        "bounds_local": {"$ref": "#/$defs/bounds_local"},
+        "neighbours": {"type": "array", "items": {"type": "string", "pattern": "^seg_[0-9]{4}$"}},
+        "session_id": {"type": "string", "minLength": 1},
+        "session_join": {"type": "boolean"},
+        "corridor_left_m": {"type": "number", "minimum": 0},
+        "corridor_right_m": {"type": "number", "minimum": 0},
+        "quality": {"type": "array", "items": {"type": "string"}},
+        "path": {
+          "type": "string",
+          "pattern": "^segments/seg_[0-9]{4}/path\\.json$"
+        },
+        "profile": {
+          "type": "string",
+          "pattern": "^segments/seg_[0-9]{4}/profile\\.json$"
+        }
+      }
+    },
+    "splat": {
+      "type": "object",
+      "required": ["format", "tier", "url"],
+      "properties": {
+        "format": {"type": "string", "minLength": 1},
+        "tier": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "bytes_by_lod": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "splats_by_lod": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
+        "antialiased": {"type": "boolean"}
+      }
+    }
+  }
+}

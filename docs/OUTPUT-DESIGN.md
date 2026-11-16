@@ -66,7 +66,7 @@ The segment is the unit of loading and caching. The app keeps the current segmen
 
 1. Build the road-contact trace for the whole build.
 2. Smooth it as a **frequency and wavelength** problem: attenuate lateral and yaw content above about 0.5 Hz (rider weave is 0.5-2 Hz), avoid a response peak near 0.2 Hz, and filter vertical by wavelength at the maximum design speed. Keep curvature continuous and yaw acceleration bounded (about 30 deg/s^2, **Measure**).
-3. Separately enforce a registration bound: smoothed path within about 0.1 m of the road-contact trace (**Measure**).
+3. **Comfort is the hard objective, held locally.** Yaw acceleration must stay at or below 30 deg/s^2 under a reachable speed profile capped by 3 m/s^2 lateral and 1.5 m/s^2 longitudinal acceleration (**Measure**). Subject to that, minimise departure from the road-contact trace and keep the change local: around each comfort violation, re-target a local window to the trace with lowered spline weights while the rest of the route stays anchored to the current fit, so one pull-over does not over-smooth the route. A hard lateral departure cap of 0.5 m (**Measure**, inside the about 1 m captured band) bounds what a local repair may do. Vertical keeps a separate 0.03 m p95 bound because it is fit noise, not rider motion. Real captures include pull-overs and junction movements, so the path absorbs them; where comfort cannot be met within the cap, keep the best fit under the cap and flag the segment for recapture.
 4. Heading from the tangent; no pitch, no roll; the path carries no head or bike motion. The app adds a fixed seated eye height and the tracked head pose, and renders a cockpit rest frame (forward-gaze MVP).
 5. Slice into segments and sample every 0.5 m: `s, e, n, u_road, heading_rad, curvature_1pm`.
 
@@ -111,7 +111,7 @@ Initial pipeline gates (all thresholds **Measure**, starting values shown):
 |---|---|
 | Ingest integrity | Any photo can't be timed or positioned (slices 2-3) |
 | Registration | p95 camera-prior residual on fixed epochs > 5 cm; scale error > 0.05 % |
-| Path to road | p95 vertical offset > 3 cm or lateral > 5 cm |
+| Path to road | p95 vertical offset > 3 cm, or lateral max > 0.5 m; lateral p95 is reported, not gated |
 | Path comfort | Yaw acceleration above budget; lateral or vertical content above 0.5 Hz above a set level |
 | RTK gaps | Longest non-fixed run > 50 m unless bridged, or grade error across a bridged gap > 0.5 % |
 | Seams | Colour delta across a block or session seam above a set level; any duplicate splat across owners |

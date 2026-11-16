@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/obolland/geo-registered-COLMAP/schemas/path-1.0.0.json",
+  "title": "georoute rider path",
+  "description": "Rider path samples in one segment's ENU frame. Heading is counter-clockwise from local east; curvature is signed, positive when the path turns left. Compatibility: 1.y minor versions only add optional fields, so readers must ignore unknown fields; required fields and their meanings do not change within 1.x.",
+  "type": "object",
+  "required": ["schema", "seg_id", "s_range", "samples"],
+  "properties": {
+    "schema": {"const": "georoute.path/1.0.0"},
+    "seg_id": {"type": "string", "pattern": "^seg_[0-9]{4}$"},
+    "s_range": {"$ref": "#/$defs/s_range"},
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/sample"}
+    }
+  },
+  "$defs": {
+    "s_range": {
+      "type": "array",
+      "prefixItems": [{"type": "number", "minimum": 0}, {"type": "number", "minimum": 0}],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "sample": {
+      "type": "object",
+      "required": ["s", "e", "n", "u_road", "heading_rad", "curvature_1pm"],
+      "properties": {
+        "s": {"type": "number", "minimum": 0},
+        "e": {"type": "number"},
+        "n": {"type": "number"},
+        "u_road": {"type": "number"},
+        "heading_rad": {
+          "type": "number",
+          "minimum": -3.141592653589793,
+          "maximum": 3.141592653589793
+        },
+        "curvature_1pm": {"type": "number"}
+      }
+    }
+  }
+}
