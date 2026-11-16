@@ -7,7 +7,9 @@ from conftest import edit_csv
 from test_photos import _photos_for
 from test_rig import EXAMPLE
 
-from georoute.photos import MatchError, match_photos
+from georoute.ingest import camera_types_for
+from georoute.photos import MatchError, Photo, match_photos, order_photos
+from georoute.report import session_report
 from georoute.rig import RigError, load_rig
 from georoute.session import load_session
 
@@ -26,8 +28,10 @@ def test_a_session_with_five_cameras_loads_and_matches(session_dir):
     _five_cameras(session_dir)
     session = load_session(session_dir)
     assert session.camera_count == 5
-    photos = {c: _photos_for(session, c) for c in (0, 4)}
-    assert {m.photo.camera for m in match_photos(session, photos)} == {0, 4}
+    photos = {c: _photos_for(session, c) for c in range(5)}
+    matched = match_photos(session, photos)
+    assert {m.photo.camera for m in matched} == {c for c in range(5) if photos[c]} >= {0, 4}
+    assert "cam4" in session_report(session)["photos_expected"]
 
 
 def _rig_text(top="", defaults="", extra_camera0=""):
@@ -121,3 +125,70 @@ def test_a_calibrated_rig_keeps_camera_types_and_names_its_reference(tmp_path):
     assert rig.reference_camera == 2
     assert rig.camera_type(3).colmap_model == "OPENCV_FISHEYE"
     assert rig.camera_type(0).max_exposure_s == 2.0 and rig.camera_type(1).max_exposure_s == 30.0
+
+
+def test_cameras_the_rig_leaves_out_get_its_defaults(session_dir, tmp_path):
+    path = tmp_path / "rig.toml"
+    text = _rig_text(defaults="shutter_delay_ms = [40.0, 95.0]\n")
+    path.write_text(
+        text[: text.index("[[camera]]", text.index("index = 0"))] + text[text.index("\n[camera_defaults]") :]
+    )
+    rig = load_rig(path)
+    assert [c.index for c in rig.cameras] == [0]
+    assert rig.camera_type(3).shutter_delay_ms == (40.0, 95.0)
+    types = camera_types_for(load_session(session_dir), rig)
+    assert set(types) == {0, 1, 2, 3} and types[3].shutter_delay_ms == (40.0, 95.0)
+
+
+@pytest.mark.parametrize(
+    "kwargs, says",
+    [
+        ({"camera_types": {6: None}}, "the rig lists cam6"),
+        ({"faulty": {6}}, "--camera-fault names cam6"),
+        ({"photos": {6: []}}, "folder for cam6"),
+    ],
+)
+def test_unknown_cameras_say_where_they_came_from(session_dir, kwargs, says):
+    session = load_session(session_dir)
+    photos = kwargs.pop("photos", {0: _photos_for(session, 0)})
+    with pytest.raises(MatchError, match=f"{says}.*cam0 to cam3"):
+        match_photos(session, photos, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "top, defaults, says",
+    [
+        ("reference_camera = true", "", "reference_camera"),
+        ("reference_camera = 1.0", "", "reference_camera"),
+        ("camera_defaults = 5", "", "camera_defaults"),
+        ("", "shutter_delay_ms = [95.0, 40.0]\n", "shutter_delay_ms"),
+        ("", "shutter_delay_ms = [5.0, 20.0]\n", "shutter_delay_ms"),
+        ("", "file_number_wrap = 5\n", "file_number_wrap"),
+        ("", 'colmap_model = "FOO"\n', "colmap_model"),
+        ("", "max_exposure_s = 0.0\n", "max_exposure_s"),
+    ],
+)
+def test_bad_camera_settings_refuse(tmp_path, top, defaults, says):
+    path = tmp_path / "rig.toml"
+    path.write_text(_rig_text(top, defaults))
+    with pytest.raises(RigError, match=says):
+        load_rig(path)
+
+
+def _numbered(numbers, file_numbers=False):
+    return [
+        Photo(f"cam0/IMG_{n:04d}.JPG", 0, (f if file_numbers else None), float(k), 0.001, 18, None)
+        for k, (n, f) in enumerate(numbers)
+    ]
+
+
+def test_a_camera_type_can_wrap_its_file_names_sooner():
+    photos = _numbered([(998, None), (999, None), (1, None), (2, None)])
+    assert [p.name_number for p in order_photos(photos[::-1], wrap=999)] == [998, 999, 1, 2]
+    with pytest.raises(MatchError, match="earlier on the camera clock"):
+        order_photos(photos, wrap=9999)
+
+
+def test_canon_file_numbers_keep_their_own_folder_rollover_whatever_the_wrap():
+    photos = _numbered([(9999, 1009999), (1, 1010001)], file_numbers=True)
+    assert order_photos(photos, wrap=999) == photos

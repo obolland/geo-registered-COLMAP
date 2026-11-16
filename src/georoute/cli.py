@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from georoute import __version__
-from georoute.ingest import IngestError, ingest, photo_sources
+from georoute.ingest import IngestError, camera_types_for, ingest, photo_sources
 from georoute.photos import MatchError, match_photos
 from georoute.report import format_report, session_report
 from georoute.rig import RigError, load_rig
@@ -150,7 +150,7 @@ def _match(args) -> int:
             serials,
             warnings,
             faulty=set(args.camera_fault),
-            camera_types=rig and rig.camera_types,
+            camera_types=camera_types_for(session, rig),
         )
     except (MatchError, RigError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)

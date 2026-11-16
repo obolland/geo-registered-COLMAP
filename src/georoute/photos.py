@@ -167,20 +167,19 @@ def order_photos(photos: list[Photo], wrap: int = CameraType.file_number_wrap) -
             raise MatchError(
                 f"cam{after.camera}: {after.path} is earlier on the camera clock than {before.path}"
             )
-        if not _consecutive(before, after, unwrapped, all(with_number), wrap):
+        if not _consecutive(before, after, unwrapped, all(with_number)):
             field = "Canon FileNumbers" if all(with_number) else "file numbers"
             raise MatchError(f"cam{after.camera}: {field} jump from {before.name} to {after.name}")
     return ordered
 
 
-def _consecutive(
-    before: Photo, after: Photo, unwrapped: dict[str, int], by_file_number: bool, wrap: int
-) -> bool:
+def _consecutive(before: Photo, after: Photo, unwrapped: dict[str, int], by_file_number: bool) -> bool:
     if not by_file_number:
         return unwrapped[after.path] == unwrapped[before.path] + 1
-    # Canon's FileNumber is folder * (wrap + 1) + number, and the folder advances when the number wraps.
-    folder, number = divmod(before.file_number, wrap + 1)
-    following = (folder + 1) * (wrap + 1) + 1 if number == wrap else before.file_number + 1
+    # Canon's FileNumber is folder * 10000 + number, the number running 0001-9999 whatever the camera
+    # type's filename wrap (which applies to filename numbers only).
+    folder, number = divmod(before.file_number, 10000)
+    following = (folder + 1) * 10000 + 1 if number == 9999 else before.file_number + 1
     return after.file_number == following
 
 
@@ -213,20 +212,20 @@ def match_photos(
     matches, bodies = [], {}
     warnings = warnings if warnings is not None else []
     cameras = range(session.camera_count)
-    for name, given in (
-        ("photos", set(photos)),
-        ("faulty", set(faulty)),
-        ("camera_types", set(camera_types or {})),
+    for source, given in (
+        ("there is a photo folder for", photos),
+        ("--camera-fault names", faulty),
+        ("the rig lists", camera_types or {}),
     ):
-        unknown = sorted(given - set(cameras))
+        unknown = sorted(set(given) - set(cameras))
         if unknown:
             raise MatchError(
-                f"{name} names cam{unknown[0]}, but the session records {session.camera_count} cameras"
+                f"{source} cam{unknown[0]}, but the session's pulses.csv records only cam0 to "
+                f"cam{session.camera_count - 1}"
             )
     for camera in cameras:
         kind = (camera_types or {}).get(camera, CameraType())
         pulses = [p for p in session.pulses if p.delays_us[camera] is not None]
-        _check_delays(camera, pulses, kind)
         if not photos.get(camera):
             if pulses and camera in faulty:
                 warnings.append(
@@ -236,6 +235,7 @@ def match_photos(
                 raise MatchError(f"cam{camera}: no photo folder, but {len(pulses)} pulses have its sync edge")
             continue
         summary = f"cam{camera}: {len(photos[camera])} photos for {len(pulses)} pulses"
+        _check_delays(camera, pulses, kind)
         _check_exposures(camera, photos[camera], kind)
         try:
             ordered = order_photos(photos[camera], kind.file_number_wrap)

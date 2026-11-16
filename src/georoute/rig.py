@@ -14,6 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
+from georoute.session import DELAY_RANGE_US
+
 RIG_SCHEMA = "georoute.rig/1.1.0"
 READABLE_SCHEMAS = ("georoute.rig/1.0.0", RIG_SCHEMA)
 _TYPE_KEYS = {"colmap_model", "shutter_delay_ms", "max_exposure_s", "file_number_wrap"}
@@ -124,9 +126,11 @@ class Rig:
     sha256: str
     camera_types: dict[int, "CameraType"] = field(default_factory=dict)
     reference_camera: int = 0
+    default_camera_type: "CameraType" = field(default_factory=lambda: CameraType())
 
     def camera_type(self, index: int) -> "CameraType":
-        return self.camera_types.get(index, CameraType())
+        """The camera's type; a camera the rig doesn't list gets the rig's [camera_defaults]."""
+        return self.camera_types.get(index, self.default_camera_type)
 
     def camera(self, index: int) -> Camera:
         for c in self.cameras:
@@ -188,7 +192,11 @@ def load_rig(path) -> Rig:
     defaults = _camera_type(doc.get("camera_defaults", {}), CameraType(), "camera_defaults")
     types = {e["index"]: _camera_type(e, defaults, f"camera {e['index']}") for e in doc["camera"]}
     reference = doc.get("reference_camera", min(c.index for c in cameras))
-    if reference not in {c.index for c in cameras}:
+    if (
+        not isinstance(reference, int)
+        or isinstance(reference, bool)
+        or reference not in {c.index for c in cameras}
+    ):
         raise RigError(f"reference_camera {reference!r} is not one of the rig's cameras")
     unserialled = [c.index for c in cameras if not c.serial]
     if measured and unserialled:
@@ -203,10 +211,13 @@ def load_rig(path) -> Rig:
         sha256=hashlib.sha256(raw).hexdigest(),
         camera_types=types,
         reference_camera=reference,
+        default_camera_type=defaults,
     )
 
 
 def _check_keys(table: dict, name: str):
+    if not isinstance(table, dict):
+        raise RigError(f"{'[' + name + ']' if name else 'the rig config'} must be a table, got {table!r}")
     unknown = set(table) - _KEYS[name]
     if unknown:
         raise RigError(f"unknown key {sorted(unknown)[0]} in {'[' + name + ']' if name else 'the top level'}")
@@ -322,13 +333,17 @@ def _camera_type(table: dict, base: CameraType, where: str) -> CameraType:
     if model not in COLMAP_MODELS:
         raise RigError(f"{where} colmap_model {model!r} is not one of {COLMAP_MODELS}")
     delay = table.get("shutter_delay_ms", list(base.shutter_delay_ms))
+    low, high = (us / 1000 for us in DELAY_RANGE_US)
     if not (
         isinstance(delay, list | tuple)
         and len(delay) == 2
         and all(_is_number(v) for v in delay)
-        and 0 < delay[0] < delay[1] <= 2000
+        and low <= delay[0] < delay[1] <= high
     ):
-        raise RigError(f"{where} shutter_delay_ms must be [min, max] within 0-2000 ms, got {delay!r}")
+        raise RigError(
+            f"{where} shutter_delay_ms must be [min, max] within {low:g}-{high:g} ms (the logger's limits), "
+            f"got {delay!r}"
+        )
     wrap = table.get("file_number_wrap", base.file_number_wrap)
     if not isinstance(wrap, int) or isinstance(wrap, bool) or wrap < 9:
         raise RigError(f"{where} file_number_wrap must be an integer of at least 9, got {wrap!r}")

@@ -138,7 +138,7 @@ def _position_captures(
     warnings: list[str] = []
     photos, serials = photo_sources(images_root, rig, warnings)
     matches = match_photos(
-        session, photos, serials, warnings, faulty=camera_faults, camera_types=rig and rig.camera_types
+        session, photos, serials, warnings, faulty=camera_faults, camera_types=camera_types_for(session, rig)
     )
     captures = [m for m in matches if m.pulse.kind == "capture"]
     if not captures:
@@ -226,6 +226,14 @@ def _check_cameras(
             warnings.append(
                 f"cam{camera} stopped {last_capture - last} pulses before the session's last capture"
             )
+
+
+def camera_types_for(session: Session, rig: Rig | None) -> dict | None:
+    """Each camera's type: the rig's cameras as configured (all must be in the session), any other
+    session camera with the rig's defaults."""
+    if rig is None:
+        return None
+    return {c: rig.camera_type(c) for c in range(session.camera_count)} | rig.camera_types
 
 
 def photo_sources(images_root, rig: Rig | None, warnings: list[str] | None = None):
