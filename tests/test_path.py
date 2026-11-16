@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -135,6 +137,11 @@ def rig_pose_at(pulse, enu):
     return RigPose(pulse, pulse * 0.8, FRAME.to_ecef(enu), np.eye(3), (0,), False)
 
 
+def rot_x(deg):
+    a = np.radians(deg)
+    return np.array([[1.0, 0.0, 0.0], [0.0, np.cos(a), -np.sin(a)], [0.0, np.sin(a), np.cos(a)]])
+
+
 def disc_points(centre, z, radius=2.0, spacing=0.25):
     e, n = np.meshgrid(
         np.arange(-radius, radius + spacing / 2, spacing),
@@ -210,6 +217,19 @@ def test_points_outside_the_height_window_are_not_road_candidates():
 
     assert c.points == len(road)
     assert c.height_above_road_m == pytest.approx(1.2, abs=1e-6)
+
+
+def test_road_contact_does_not_depend_on_the_rig_rolling_about_its_forward_axis():
+    rig = make_rig(offsets=((0, 0.0),))
+    points = disc_points((0.0, 0.0), 0.0)
+    upright = rig_pose_at(4, [0.0, 0.0, 1.2])
+    leaning = replace(upright, world_from_rig=rot_x(15.0))
+
+    calm = road_contacts([upright], points, rig, FRAME)[0]
+    leaned = road_contacts([leaning], points, rig, FRAME)[0]
+
+    np.testing.assert_allclose(calm.ecef, leaned.ecef, atol=1e-9)
+    assert calm.height_above_road_m == pytest.approx(leaned.height_above_road_m)
 
 
 def test_a_sparse_disc_falls_back_to_the_nominal_rig_height_and_flags_it():
@@ -434,3 +454,15 @@ def test_profile_heights_are_geodetic_and_the_geoid_is_evaluated_for_every_sampl
     np.testing.assert_allclose(profile.h_ortho_m, height - 50.0, atol=1e-6)
     assert geoid.calls == 1
     assert "OSGM15" not in str(profile.quality)
+
+
+def test_a_height_step_is_smoothed_into_finite_heights_and_grade():
+    x = np.arange(0.0, 40.0, 0.2)
+    z = np.where(x < 20.0, 0.0, 0.2)
+
+    _, profile = profile_for(x, z)
+
+    assert np.all(np.isfinite(profile.h_ortho_m))
+    assert np.all(np.isfinite(profile.grade_percent))
+    assert np.abs(np.diff(profile.h_ortho_m)).max() < 0.2
+    assert np.abs(np.diff(profile.grade_percent)).max() < 5.0
