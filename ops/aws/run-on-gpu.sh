@@ -28,13 +28,13 @@ behaviour=$(aws_ ec2 describe-instance-attribute --instance-id "$INSTANCE" --att
     --query 'InstanceInitiatedShutdownBehavior.Value' --output text)
 [[ $behaviour == stop ]] || { echo "shutdown behaviour is $behaviour, not stop; refusing" >&2; exit 1; }
 
-started_at=0
+started=false
 stop_instance() {
     status=$?
     echo "stopping $INSTANCE"
     aws_ ec2 stop-instances --instance-ids "$INSTANCE" >/dev/null || echo "STOP CALL FAILED: stop it in the console now" >&2
     aws_ ec2 wait instance-stopped --instance-ids "$INSTANCE" && echo "instance stopped"
-    if ((started_at > 0)); then
+    if $started; then
         echo "billed time about $(((SECONDS - started_at + 59) / 60)) minutes"
     fi
     exit "$status"
@@ -44,6 +44,7 @@ trap 'exit 130' INT TERM
 
 echo "starting $INSTANCE (max $max_minutes minutes)"
 aws_ ec2 start-instances --instance-ids "$INSTANCE" >/dev/null
+started=true
 started_at=$SECONDS
 aws_ ec2 wait instance-running --instance-ids "$INSTANCE"
 echo "running; waiting for SSM"
