@@ -87,6 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--out", type=Path, required=True)
     rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
     rig.add_argument("rig_toml", type=Path)
+    route = sub.add_parser("route-build", help="build the rider path, distance profile and route package")
+    route.add_argument("workspace", type=Path, help="COLMAP workspace with sparse/refined and report.json")
+    route.add_argument("--images", type=Path, required=True, help="images.json from ingest")
+    route.add_argument("--rig", type=Path, required=True)
+    route.add_argument("--out", type=Path, required=True, help="routes folder for <route_id>/<build_id>")
+    route.add_argument("--route-id", required=True)
+    route.add_argument("--segment-length", type=float, default=1000.0, metavar="METRES")
+    route.epilog = "exit status: 0 all QA gates pass, 1 built with a failing segment, 2 refused"
     return parser
 
 
@@ -111,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         return _rig_calibrate(args)
     if args.command == "rig-check":
         return _rig_check(args)
+    if args.command == "route-build":
+        return _route_build(args)
     parser.print_help()
     return 0
 
@@ -338,3 +348,51 @@ def _colmap_report(args) -> int:
         print(f"GATE {failure}", file=sys.stderr)
     print(f"report: {args.workspace / 'report.json'}")
     return 1 if result["failures"] else 0
+
+
+def _route_build(args) -> int:
+    from georoute.build import BuildError, build_route
+    from georoute.geoid import GeoidError
+    from georoute.package import PackageError
+    from georoute.path import PathError
+    from georoute.qa import QAError
+
+    try:
+        print(f"building route {args.route_id} ...", flush=True)
+        summary = build_route(
+            args.workspace,
+            args.images,
+            load_rig(args.rig),
+            args.out,
+            args.route_id,
+            segment_length_m=args.segment_length,
+        )
+    except (
+        BuildError,
+        GeoidError,
+        PackageError,
+        PathError,
+        QAError,
+        RigError,
+        OSError,
+        KeyError,
+        ValueError,
+    ) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 2
+    for segment in summary["recapture"]:
+        print(f"GATE {segment} failed QA and is on the recapture list", file=sys.stderr)
+    check = summary["height_check"]
+    if check.get("measured_pulses"):
+        print(
+            f"height above road p5/p50/p95 {check['p5_m']:.3f}/{check['p50_m']:.3f}/{check['p95_m']:.3f} m "
+            f"against {check['expected_m']:.3f} m nominal; "
+            f"{check.get('nominal_pulses', 0)} nominal-surface pulses"
+        )
+    print(
+        f"{summary['segments']} segments, {summary['distance_m']:.1f} m, loop {summary['loop']}, "
+        f"QA {summary['status']} (recapture {summary['recapture'] or 'none'})"
+    )
+    print(f"package: {summary['package']}")
+    print(f"qa: {summary['qa']}")
+    return 0 if summary["status"] == "pass" else 1
