@@ -137,3 +137,14 @@ Track 1 (slices 0-5) complete on `pipeline/track1`, not pushed.
 ## Requirement: hardware-configurable pipeline (Olly, 2026-11-15)
 
 Adding cameras, changing camera type or changing rig must be a config change, not a code change. Already config: rig layout, folders, serials, positions, angles, antenna, curtain travel, calibration. Still hard-coded, to move into the rig config in a dedicated slice after slice 6: the 4-camera count (session, matching, rig validation, CLI; more cameras also needs a logger v2 contract), the COLMAP camera model per camera, Canon-specific rules (IMG_9999 rollover, 30-500 ms shutter delay, exposure limits), and the reference camera (cam2).
+
+## Refine: sampled vs full, judged on held-out pulses (2026-11-16)
+
+Same global model and first-pass priors, every 10th pulse held out (248 photos):
+
+| | Time | Held-out horizontal p50 / p95 | Held-out vertical p50 / p95 | Scale vs RTK path |
+|---|---|---|---|---|
+| Sampled (200k longest tracks) | 75 min | 1.75-2.08 / 3.7-5.2 cm | 1.28-1.35 / 3.4-4.0 cm | 0.99984 |
+| Full (979k points) | 179 min | 2.17-2.47 / 5.6-6.5 cm | 1.33-1.43 / 3.9-4.1 cm | 0.99994 |
+
+Sampling costs no accuracy on held-out pulses and is slightly better, plausibly because the longest tracks are the most reliable matches and short tracks carry the bad ones (vegetation, reflections). Adopted as the default. Caveats: a single held-out pulse sits between priored neighbours 0.8 m away, so it tests local consistency more than independence (holding out whole stretches would be stronger); the path-length scale ratio is noise-biased at the 1e-4 level. Gate: only cam0 horizontal p95 (5.2 cm) fails on the sampled run.
