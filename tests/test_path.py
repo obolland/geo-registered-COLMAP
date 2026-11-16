@@ -6,7 +6,9 @@ from georoute.path import (
     NOMINAL_SURFACE_SIGMA_M,
     PathError,
     RigPose,
+    RoadContact,
     height_check,
+    rider_path,
     rig_poses,
     road_contacts,
 )
@@ -235,3 +237,99 @@ def test_height_check_reports_the_measured_pulses_against_the_rig_config():
     assert check["measured_pulses"] == 2
     assert check["nominal_pulses"] == 0
     assert check["p50_m"] == pytest.approx(1.2, abs=1e-6)
+
+
+def contact_at(index, enu, sigma=0.01):
+    return RoadContact(index, index * 0.8, FRAME.to_ecef(enu), sigma, 1.2, 100, False)
+
+
+def straight_contacts(x, n=None, u=None):
+    n = np.zeros_like(x) if n is None else n
+    u = np.zeros_like(x) if u is None else u
+    return [contact_at(i, [e, nn, uu]) for i, (e, nn, uu) in enumerate(zip(x, n, u, strict=True))]
+
+
+def test_a_straight_trace_stays_straight_and_keeps_exact_heading_and_curvature():
+    x = np.arange(0.0, 50.0, 0.8)
+    path = rider_path(straight_contacts(x), FRAME)
+
+    assert path.length_m == pytest.approx(49.6, abs=0.02)
+    enu, heading, curvature, _ = path.at([0.0, 10.0, 25.0, 49.0])
+    np.testing.assert_allclose(enu[:, 1], 0.0, atol=2e-3)
+    np.testing.assert_allclose(enu[:, 2], 0.0, atol=2e-3)
+    np.testing.assert_allclose(heading, 0.0, atol=2e-3)
+    np.testing.assert_allclose(curvature, 0.0, atol=1e-4)
+    assert path.smoothing["p95_lateral_m"] <= 0.1
+    assert path.smoothing["p95_vertical_m"] <= 0.1
+
+
+def test_a_circle_gives_constant_heading_rate_and_curvature():
+    radius = 20.0
+    circumference = 2 * np.pi * radius
+    theta = np.arange(0.0, circumference, 0.5) / radius
+    contacts = [contact_at(i, [radius * np.cos(a), radius * np.sin(a), 0.0]) for i, a in enumerate(theta)]
+    path = rider_path(contacts, FRAME)
+
+    quarter = np.pi / 2 * radius
+    _, heading, curvature, _ = path.at([quarter, np.pi * radius, 1.5 * np.pi * radius])
+    wrapped = (np.array([np.pi, 1.5 * np.pi, 2 * np.pi]) + np.pi) % (2 * np.pi) - np.pi
+    assert np.abs(np.angle(np.exp(1j * (heading - wrapped)))).max() < 0.02
+    middle = np.abs(path.s_m - path.length_m / 2) < path.length_m * 0.4
+    assert np.median(np.abs(path.curvature_1pm[middle])) == pytest.approx(1 / radius, rel=0.05)
+    assert np.all(np.sign(path.curvature_1pm[middle]) > 0)
+
+
+def test_the_strongest_smoothing_under_the_registration_bound_removes_capture_weave():
+    x = np.arange(0.0, 50.0, 0.2)
+    weave = 0.03 * np.sin(2 * np.pi * x / 2.0)
+    path = rider_path(straight_contacts(x, n=weave), FRAME)
+
+    assert path.smoothing["p95_lateral_m"] <= 0.1
+    enu, heading, _, _ = path.at(path.s_m)
+    middle = slice(20, -20)
+    assert np.ptp(enu[middle, 1]) < 0.5 * np.ptp(weave)
+    assert np.abs(heading[middle]).max() < np.radians(5.0)
+
+
+def test_the_vertical_spline_removes_weave_and_stays_inside_the_bound():
+    x = np.arange(0.0, 50.0, 0.2)
+    weave = 0.03 * np.sin(2 * np.pi * x / 2.0)
+    path = rider_path(straight_contacts(x, u=weave), FRAME)
+
+    assert path.smoothing["p95_vertical_m"] <= 0.1
+    middle = slice(20, -20)
+    assert np.ptp(path.enu_m[middle, 2]) < 0.5 * np.ptp(weave)
+
+
+def test_a_stop_collapses_without_splitting_the_path_or_breaking_the_tangent():
+    x = np.concatenate([np.arange(0.0, 10.0, 0.5), 10.0 + np.arange(20) * 1e-4, np.arange(10.5, 20.0, 0.5)])
+    path = rider_path(straight_contacts(x), FRAME)
+
+    assert path.length_m == pytest.approx(19.5, abs=0.05)
+    assert np.all(np.diff(path.s_m) > 0)
+    assert np.all(np.isfinite(path.enu_m))
+    _, heading, _, _ = path.at([5.0, 10.0, 15.0])
+    np.testing.assert_allclose(heading, 0.0, atol=1e-3)
+
+
+def test_a_gap_in_the_contacts_is_bridged_continuously():
+    x = np.concatenate([np.arange(0.0, 10.0, 0.5), np.arange(30.0, 40.0, 0.5)])
+    path = rider_path(straight_contacts(x), FRAME)
+
+    enu, heading, _, _ = path.at([10.0, 20.0, 30.0])
+    np.testing.assert_allclose(enu[:, 1], 0.0, atol=1e-6)
+    np.testing.assert_allclose(heading, 0.0, atol=1e-3)
+    assert path.length_m == pytest.approx(39.5, abs=0.01)
+
+
+def test_too_few_contacts_refuse_rather_than_fitting_an_underdetermined_spline():
+    with pytest.raises(PathError, match="at least 4"):
+        rider_path(straight_contacts(np.array([0.0, 1.0, 2.0])), FRAME)
+
+
+def test_asking_for_a_point_outside_the_path_refuses():
+    path = rider_path(straight_contacts(np.arange(0.0, 10.0, 0.8)), FRAME)
+    with pytest.raises(PathError, match="outside"):
+        path.at([-1.0])
+    with pytest.raises(PathError, match="outside"):
+        path.at([path.length_m + 0.1])

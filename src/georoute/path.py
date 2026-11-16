@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.interpolate import UnivariateSpline
 from scipy.optimize import least_squares
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation, Slerp
@@ -183,6 +184,174 @@ def height_check(contacts, rig: Rig) -> dict:
         p5, p50, p95 = np.percentile(measured, [5, 50, 95])
         result.update(p5_m=float(p5), p50_m=float(p50), p95_m=float(p95))
     return result
+
+
+# The path is published at 0.5 m and the profile at 1 m, but it is sampled this finely so heading, curvature
+# and grade are interpolated from a smooth curve rather than from the publication grid.
+DENSE_STEP_M = 0.1
+# Contacts closer than this along the trace are a stop: averaging them collapses the stop without inventing
+# motion or a zero-length spline interval.
+MIN_TRACE_SPACING_M = 0.01
+# The smoothed path may not depart from the reconstructed road trace by more than this, laterally or
+# vertically; the strongest smoothing that respects it is used.
+SMOOTHING_BOUND_M = 0.1
+MAX_SMOOTHING_S = 1e12
+
+
+@dataclass(frozen=True)
+class RiderPath:
+    """The smoothed rider path, sampled densely along its own 3D arclength. Heading is the tangent direction
+    counter-clockwise from local east; curvature is signed, positive when the path turns left. The raw road
+    trace is kept for the registration and path-to-road checks."""
+
+    s_m: np.ndarray
+    enu_m: np.ndarray
+    heading_rad: np.ndarray
+    curvature_1pm: np.ndarray
+    sigma_m: np.ndarray
+    trace_s_m: np.ndarray
+    trace_enu_m: np.ndarray
+    trace_sigma_m: np.ndarray
+    smoothing: dict
+
+    @property
+    def length_m(self) -> float:
+        return float(self.s_m[-1])
+
+    def at(self, s):
+        """Interpolates the path at route-global 3D distances. Returns ENU, heading, curvature and sigma."""
+        s = np.atleast_1d(np.asarray(s, float))
+        if np.any(s < -1e-9) or np.any(s > self.length_m + 1e-9):
+            raise PathError(
+                f"asked for a point at s={s.min():.3f} to {s.max():.3f} m, outside 0 to {self.length_m:.3f} m"
+            )
+        s = np.clip(s, 0.0, self.length_m)
+        enu = np.column_stack([np.interp(s, self.s_m, self.enu_m[:, axis]) for axis in range(3)])
+        heading = np.interp(s, self.s_m, np.unwrap(self.heading_rad))
+        heading = (heading + np.pi) % (2 * np.pi) - np.pi
+        curvature = np.interp(s, self.s_m, self.curvature_1pm)
+        sigma = np.interp(s, self.s_m, self.sigma_m)
+        return enu, heading, curvature, sigma
+
+
+def rider_path(contacts, frame: LocalFrame, bound_m: float = SMOOTHING_BOUND_M) -> RiderPath:
+    """The road-contact trace reparameterised by 3D distance, then smoothed in east, north and up by cubic
+    smoothing splines. The smoothing is the strongest that keeps the 95th percentile of the lateral and
+    vertical departures from the trace under bound_m. Capture weave is a 0.75-3 m wavelength; replaying it at
+    riding speed would be visible and nauseating, so the bound, not the raw trace, sets the limit."""
+    if len(contacts) < 4:
+        raise PathError(f"need at least 4 road contacts to fit a rider path, got {len(contacts)}")
+    enu = np.array([frame.from_ecef(c.ecef) for c in contacts])
+    sigma = np.array([c.sigma_m for c in contacts])
+    distance = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(enu, axis=0), axis=1))])
+    distance, enu, sigma = _collapse_stops(distance, enu, sigma)
+    if len(distance) < 4:
+        raise PathError(
+            f"the trace has only {len(distance)} distinct positions, need at least 4 to fit a rider path"
+        )
+    splines, smoothing = _smooth_to_bound(distance, enu, bound_m)
+    dense_distance, dense_s, enu_dense, heading, curvature = _sample_path(splines, distance, enu)
+    keep = np.concatenate([[True], np.diff(dense_s) > 0])
+    dense_distance, dense_s = dense_distance[keep], dense_s[keep]
+    enu_dense, heading, curvature = enu_dense[keep], heading[keep], curvature[keep]
+    sigma_dense = np.interp(dense_distance, distance, sigma)
+    return RiderPath(
+        dense_s,
+        enu_dense,
+        heading,
+        curvature,
+        sigma_dense,
+        distance,
+        enu,
+        sigma,
+        smoothing,
+    )
+
+
+def _collapse_stops(distance, enu, sigma):
+    """Averages consecutive contacts that moved less than MIN_TRACE_SPACING_M, so a stop becomes one point."""
+    groups = []
+    start = 0
+    for index in range(1, len(distance)):
+        if distance[index] - distance[start] >= MIN_TRACE_SPACING_M:
+            groups.append(np.arange(start, index))
+            start = index
+    groups.append(np.arange(start, len(distance)))
+    collapsed_d = np.array([distance[group].mean() for group in groups])
+    collapsed_enu = np.array([enu[group].mean(axis=0) for group in groups])
+    collapsed_sigma = np.array([sigma[group].mean() for group in groups])
+    return collapsed_d, collapsed_enu, collapsed_sigma
+
+
+def _smooth_to_bound(distance, enu, bound_m):
+    def fit(parameter):
+        return [UnivariateSpline(distance, enu[:, axis], k=3, s=parameter) for axis in range(3)]
+
+    def deviations(splines):
+        fitted = np.column_stack([spline(distance) for spline in splines])
+        de = splines[0].derivative()(distance)
+        dn = splines[1].derivative()(distance)
+        norm = np.hypot(de, dn)
+        delta = fitted[:, :2] - enu[:, :2]
+        lateral = np.where(norm > 0, np.abs(delta[:, 0] * dn - delta[:, 1] * de) / norm, np.hypot(*delta.T))
+        vertical = np.abs(fitted[:, 2] - enu[:, 2])
+        return float(np.percentile(lateral, 95)), float(np.percentile(vertical, 95))
+
+    def acceptable(parameter):
+        try:
+            splines = fit(parameter)
+            lateral, vertical = deviations(splines)
+        except Exception:
+            return False, None, None, None
+        return lateral <= bound_m and vertical <= bound_m, splines, lateral, vertical
+
+    best = fit(0.0)
+    low = 0.0
+    high = 1e-3
+    for _ in range(60):
+        ok, splines, lateral, vertical = acceptable(high)
+        if not ok:
+            break
+        best, low = splines, high
+        high *= 4.0
+        if high > MAX_SMOOTHING_S:
+            break
+    for _ in range(50):
+        middle = np.sqrt(low * high) if low > 0 else high / 2
+        ok, splines, lateral, vertical = acceptable(middle)
+        if ok:
+            best, low = splines, middle
+        else:
+            high = middle
+        if high / low < 1.01 and low > 0:
+            break
+    lateral, vertical = deviations(best)
+    return best, {
+        "method": "cubic-smoothing-spline",
+        "parameter_s": float(low),
+        "bound_m": float(bound_m),
+        "p95_lateral_m": lateral,
+        "p95_vertical_m": vertical,
+        "trace_points": int(len(distance)),
+        "min_trace_spacing_m": MIN_TRACE_SPACING_M,
+        "dense_step_m": DENSE_STEP_M,
+    }
+
+
+def _sample_path(splines, distance, enu):
+    count = max(2, int(np.ceil(distance[-1] / DENSE_STEP_M)) + 1)
+    dense_distance = np.linspace(distance[0], distance[-1], count)
+    enu_dense = np.column_stack([spline(dense_distance) for spline in splines])
+    ds = np.linalg.norm(np.diff(enu_dense, axis=0), axis=1)
+    s = np.concatenate([[0.0], np.cumsum(ds)])
+    de = splines[0].derivative()(dense_distance)
+    dn = splines[1].derivative()(dense_distance)
+    heading = (np.arctan2(dn, de) + np.pi) % (2 * np.pi) - np.pi
+    d2e = splines[0].derivative(2)(dense_distance)
+    d2n = splines[1].derivative(2)(dense_distance)
+    speed = np.maximum(np.hypot(de, dn) ** 3, 1e-12)
+    curvature = (de * d2n - dn * d2e) / speed
+    return dense_distance, s, enu_dense, heading, curvature
 
 
 def _pulse_times(images) -> dict[int, float]:
