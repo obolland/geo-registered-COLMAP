@@ -15,7 +15,12 @@ from georoute.path import distance_profile, rider_path
 
 META = {
     "datum": FRAME.datum,
-    "geoid": {"name": "OSGM15", "grid": "uk_os_OSGM15_GB.tif", "sha256": "0" * 64},
+    "geoid": {
+        "name": "OSGM15",
+        "grid": "uk_os_OSGM15_GB.tif",
+        "sha256": "0" * 64,
+        "datum": "ETRS89",
+    },
     "session_id": "20261114T133719Z",
     "app_defaults": {"design_speed_mps": 18.0, "corridor_measured": False},
     "qa": {"status": "not-run"},
@@ -96,6 +101,28 @@ def test_neighbours_are_found_by_3d_proximity_even_across_a_hairpin():
     assert any(segment.s_start >= 100.0 for segment in neighbours)
 
 
+def test_profile_samples_reach_every_segment_boundary_for_a_non_integer_segment_length():
+    path, profile = profile_for(np.arange(0.0, 25.5, 0.5))
+    route = cut_segments(path, profile, FRAME, 7.3)
+
+    for segment in route.segments:
+        assert segment.profile["s"][0] == pytest.approx(segment.s_start)
+        assert segment.profile["s"][-1] == pytest.approx(segment.s_end)
+    for left, right in zip(route.segments[:-1], route.segments[1:], strict=True):
+        assert left.profile["h_ortho"][-1] == pytest.approx(right.profile["h_ortho"][0])
+        assert left.profile["grade"][-1] == pytest.approx(right.profile["grade"][0])
+
+
+def test_segments_shorter_than_the_profile_step_still_get_boundary_samples():
+    path, profile = profile_for(np.arange(0.0, 2.5, 0.5))
+    route = cut_segments(path, profile, FRAME, 0.4)
+
+    assert len(route.segments) > 2
+    for segment in route.segments:
+        assert segment.profile["s"][0] == pytest.approx(segment.s_start)
+        assert segment.profile["s"][-1] == pytest.approx(segment.s_end)
+
+
 def test_far_segments_on_a_straight_route_are_not_neighbours():
     _, _, route = straight_route(length=250.0, segment_length=20.0)
 
@@ -168,6 +195,27 @@ def test_an_existing_build_is_never_overwritten(tmp_path):
         write_package(tmp_path, "route", "build", route, META)
 
 
+def test_a_multi_kilometre_route_keeps_positions_and_headings_consistent_across_frames():
+    path, profile = profile_for(np.arange(0.0, 5000.5, 1.0))
+    route = cut_segments(path, profile, FRAME, 2500.0)
+
+    assert len(route.segments) == 2
+    left, right = route.segments
+    left_ecef = left.origin.to_ecef([[left.e[-1], left.n[-1], left.u[-1]]])[0]
+    right_ecef = right.origin.to_ecef([[right.e[0], right.n[0], right.u[0]]])[0]
+    np.testing.assert_allclose(left_ecef, right_ecef, atol=1e-6)
+
+    def session_bearing(segment, index):
+        heading = segment.heading_rad[index]
+        local = np.array([np.cos(heading), np.sin(heading), 0.0])
+        ecef = local @ segment.origin.ecef_from_enu.T
+        session = ecef @ FRAME.ecef_from_enu
+        return np.arctan2(session[1], session[0])
+
+    difference = session_bearing(left, -1) - session_bearing(right, 0)
+    assert abs(np.angle(np.exp(1j * difference))) < 1e-9
+
+
 def test_a_failure_before_publication_leaves_neither_a_package_nor_staging(tmp_path, monkeypatch):
     _, _, route = straight_route()
     real = package._write_json
@@ -180,6 +228,24 @@ def test_a_failure_before_publication_leaves_neither_a_package_nor_staging(tmp_p
     monkeypatch.setattr(package, "_write_json", fail_on_route_json)
 
     with pytest.raises(OSError, match="disk full"):
+        write_package(tmp_path, "route", "build", route, META)
+
+    assert not (tmp_path / "route" / "build").exists()
+    assert not any("staging" in path.name for path in (tmp_path / "route").iterdir())
+
+
+def test_a_keyboard_interrupt_before_publication_cleans_staging(tmp_path, monkeypatch):
+    _, _, route = straight_route()
+    real = package._write_json
+
+    def interrupt_on_route_json(path, data):
+        if path.name == "route.json":
+            raise KeyboardInterrupt
+        real(path, data)
+
+    monkeypatch.setattr(package, "_write_json", interrupt_on_route_json)
+
+    with pytest.raises(KeyboardInterrupt):
         write_package(tmp_path, "route", "build", route, META)
 
     assert not (tmp_path / "route" / "build").exists()

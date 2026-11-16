@@ -11,13 +11,14 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from georoute.geodesy import LocalFrame, ecef_to_lla
-from georoute.path import DistanceProfile, PathError, RiderPath
+from georoute.path import DistanceProfile, RiderPath
 
 ROUTE_SCHEMA = "georoute.route/1.0.0"
 PATH_SCHEMA = "georoute.path/1.0.0"
 PROFILE_SCHEMA = "georoute.profile/1.0.0"
 PATH_STEP_M = 0.5
 NEIGHBOUR_RADIUS_M = 100.0
+NEIGHBOUR_SAMPLE_M = 5.0
 LOOP_RADIUS_M = 5.0
 REQUIRED_META = ("datum", "geoid", "session_id", "app_defaults", "qa", "provenance")
 
@@ -227,23 +228,52 @@ def _path_samples(start, end):
 
 
 def _slice_profile(profile, start, end):
+    """The profile samples inside the segment, plus interpolated samples at the exact s_range ends so every
+    segment reaches its boundaries and neighbours meet at the same height and grade."""
     mask = (profile.s_m >= start - 1e-9) & (profile.s_m <= end + 1e-9)
-    if not mask.any():
-        raise PathError(f"profile has no samples between s={start:.3f} and {end:.3f}")
-    return {
-        "s": profile.s_m[mask],
-        "s_h": profile.s_h_m[mask],
-        "lat": profile.lat_deg[mask],
-        "lon": profile.lon_deg[mask],
-        "h_ortho": profile.h_ortho_m[mask],
-        "sigma_h": profile.sigma_h_m[mask],
-        "grade": profile.grade_percent[mask],
-        "curvature": profile.curvature_1pm[mask],
-        "corridor_left_m": profile.corridor_left_m[mask],
-        "corridor_right_m": profile.corridor_right_m[mask],
-        "surface": tuple(surface for surface, keep in zip(profile.surface, mask, strict=True) if keep),
-        "quality": tuple(q for q, keep in zip(profile.quality, mask, strict=True) if keep),
+    attributes = {
+        "s": "s_m",
+        "s_h": "s_h_m",
+        "lat": "lat_deg",
+        "lon": "lon_deg",
+        "h_ortho": "h_ortho_m",
+        "sigma_h": "sigma_h_m",
+        "grade": "grade_percent",
+        "curvature": "curvature_1pm",
+        "corridor_left_m": "corridor_left_m",
+        "corridor_right_m": "corridor_right_m",
     }
+    arrays = {key: getattr(profile, attribute)[mask].tolist() for key, attribute in attributes.items()}
+    arrays["surface"] = [surface for surface, keep in zip(profile.surface, mask, strict=True) if keep]
+    arrays["quality"] = [quality for quality, keep in zip(profile.quality, mask, strict=True) if keep]
+    for boundary, at_start in ((start, True), (end, False)):
+        if arrays["s"]:
+            existing = arrays["s"][0] if at_start else arrays["s"][-1]
+            if abs(existing - boundary) <= 1e-9:
+                continue
+        nearest = int(_nearest_index(profile.s_m, boundary))
+        row = {
+            key: float(np.interp(boundary, profile.s_m, getattr(profile, attribute)))
+            for key, attribute in attributes.items()
+        }
+        row["surface"] = profile.surface[nearest]
+        row["quality"] = profile.quality[nearest]
+        for key in arrays:
+            if at_start:
+                arrays[key].insert(0, row[key])
+            else:
+                arrays[key].append(row[key])
+    return {
+        key: np.array(value) if key not in ("surface", "quality") else tuple(value)
+        for key, value in arrays.items()
+    }
+
+
+def _nearest_index(values, target):
+    index = np.searchsorted(values, target)
+    left = np.clip(index - 1, 0, len(values) - 1)
+    right = np.clip(index, 0, len(values) - 1)
+    return left if abs(values[left] - target) <= abs(values[right] - target) else right
 
 
 def _neighbours(segments):
@@ -251,10 +281,20 @@ def _neighbours(segments):
     the branch on the other side of the hedge as well as the continuation."""
     if len(segments) < 2:
         return segments
+    stride = max(1, int(round(NEIGHBOUR_SAMPLE_M / PATH_STEP_M)))
+    sample_sets = []
+    for segment in segments:
+        index = np.arange(0, len(segment.e), stride)
+        if index[-1] != len(segment.e) - 1:
+            index = np.append(index, len(segment.e) - 1)
+        sample_sets.append(index)
     points = np.vstack(
-        [segment.origin.to_ecef(np.column_stack([segment.e, segment.n, segment.u])) for segment in segments]
+        [
+            segment.origin.to_ecef(np.column_stack([segment.e, segment.n, segment.u])[index])
+            for segment, index in zip(segments, sample_sets, strict=True)
+        ]
     )
-    owner = np.concatenate([np.full(len(segment.e), index) for index, segment in enumerate(segments)])
+    owner = np.concatenate([np.full(len(index), position) for position, index in enumerate(sample_sets)])
     pairs = cKDTree(points).query_pairs(NEIGHBOUR_RADIUS_M + 1e-9, output_type="ndarray")
     found = {index: set() for index in range(len(segments))}
     for a, b in pairs:
@@ -290,9 +330,12 @@ def write_package(out_dir, route_id: str, build_id: str, route: SegmentedRoute, 
             folder.mkdir(parents=True)
             _write_json(folder / "path.json", segment.path_document())
             _write_json(folder / "profile.json", segment.profile_document())
+            _fsync_directory(folder)
+        _fsync_directory(staging / "segments")
         _write_json(staging / "route.json", route.document(route_id, build_id, meta))
+        _fsync_directory(staging)
         os.replace(staging, final)
-    except Exception:
+    except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return final
@@ -304,4 +347,15 @@ def _plain_name(value: str, what: str):
 
 
 def _write_json(path: Path, data: dict):
-    path.write_text(json.dumps(data, indent=1, allow_nan=False) + "\n")
+    with path.open("w") as handle:
+        handle.write(json.dumps(data, indent=1, allow_nan=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path):
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
