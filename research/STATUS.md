@@ -151,3 +151,61 @@ Same global model and first-pass priors, every 10th pulse held out (248 photos):
 | Full (979k points) | 179 min | 2.17-2.47 / 5.6-6.5 cm | 1.33-1.43 / 3.9-4.1 cm | 0.99994 |
 
 Sampling costs no accuracy on held-out pulses and is slightly better, plausibly because the longest tracks are the most reliable matches and short tracks carry the bad ones (vegetation, reflections). Adopted as the default. Caveats: a single held-out pulse sits between priored neighbours 0.8 m away, so it tests local consistency more than independence (holding out whole stretches would be stronger); the path-length scale ratio is noise-biased at the 1e-4 level. Gate: only cam0 horizontal p95 (5.2 cm) fails on the sampled run.
+
+## Slice 7 build (2026-11-16)
+
+Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 438 tests pass; `ruff check .` clean.
+
+### Real run
+
+```
+cd ~/geo-registered-COLMAP
+uv run georoute route-build ~/fieldtest2/colmap/s1-gsample \
+  --images ~/fieldtest2/out/s1-v120/images.json \
+  --rig rigs/handlebar-4cam-ft2-calibrated.toml \
+  --out ~/fieldtest2/routes --route-id ft2-s1 --segment-length 300
+```
+
+- The first attempt with `out/s1/images.json` refused on schema `georoute.images/1.1.0`; the file already carried `velocity_enu`. The Splat pipeline session regenerated it at 1.2.0 as `out/s1-v120/images.json` and verified its images and frame are identical to `out/s1`. The strict 1.2.0 check was kept.
+- An intermediate run exposed a QA indexing bug: raw road-contact distance was used as smoothed path arclength (509.478 m against 508.539 m). Fixed test-first in `0929964`: each trace sample now carries `trace_smoothed_m`; profile flags, segment gates and RTK runs use it, and raw distance remains only the spline parameter. The refusal QA reports from both attempts are retained under `qa/ft2-s1/`.
+- Output package: `~/fieldtest2/routes/ft2-s1/20261116T100323Z/`.
+- QA: `~/fieldtest2/routes/qa/ft2-s1/20261116T100323Z/` with `report.json`, `plan.png`, `profile.png` and `curvature.png`.
+- Route: 508.54 m, loop false (start and end 19.95 m apart), ETRS89, OSGM15 grid sha256 `bf0ac81f1c0c33332693d7d606f335b793c3c2995b8e69eeb1350bd94adcde3b`, two segments, each the other's neighbour. `splats` is empty until slice 8.
+
+### Gate table
+
+| Segment | s range (m) | Path p95 vertical | Path p95 lateral | Path lateral max | Comfort max yaw accel | Longest non-fixed | Max bridged gap | Registration | Status |
+|---|---|---|---|---|---|---|---|---|---|
+| seg_0000 | 0-300.00 | pass 2.81 cm | pass 9.50 cm | pass 17.57 cm | fail 591.8 deg/s^2 | pass 2.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
+| seg_0001 | 300.00-508.54 | fail 3.58 cm | fail 10.34 cm | pass 24.28 cm | fail 2086.6 deg/s^2 | pass 0.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
+
+Both segments are on the recapture list and carry `gate-failed` in the published segment quality. The comfort gate uses 18 m/s, capped in bends by 3 m/s^2 lateral acceleration.
+
+- Height above road: 625 measured contacts, 0 nominal; fitted p5 1.124 m, p50 1.160 m, p95 1.215 m against the 1.18 m rig config. Median is 2.0 cm below the hand measurement and p95 3.5 cm above it.
+- Road points: 978,646 input, 932,315 used (track length at least 3, reprojection error at most 2 px).
+- Smoothing: horizontal parameter 1.2512, p95 lateral 9.97 cm; vertical parameter 0.1442, p95 vertical 2.92 cm; no FITPACK warnings.
+- RTK: 2,456 of 2,464 images fixed and 8 float; 2 profile samples flagged `rtk-float` in seg_0000; 41 images flagged `time-recovered`, giving 10 profile samples in seg_0001. No bridged gaps and no nominal-surface samples.
+- Corridor: 1.0 m each side, marked unmeasured until the lateral pass is analysed.
+
+### Plots
+
+- `plan.png`: road-contact trace against the smoothed path, with the segment boundary marked.
+- `profile.png`: orthometric height and grade against distance.
+- `curvature.png`: signed curvature with the design-speed lateral limit (0.0093 1/m at 18 m/s and 3 m/s^2) and the beyond-limit regions shaded.
+- Curvature has sharp spikes around s = 275, 344-348, 419-425 and 471 m despite a smooth-looking plan view. Those spikes drive the comfort failures; they are not yet explained.
+
+### Deviations from the plan
+
+- QA is written to `qa/<route_id>/<build_id>` rather than the design's `qa/<build_id>`, so two routes built in the same second cannot overwrite each other's reports.
+- `overview.json` is deferred to slice 8 with the overview tiles.
+- The real build uses `out/s1-v120/images.json` for the schema reason above; the strict 1.2.0 check has no compatibility path.
+- Per review decisions: horizontal and vertical smoothing have separate bounds (0.10 m and 0.03 m p95), the path-to-road lateral p95 gate is 0.10 m with a 0.30 m lateral max, and a long non-fixed RTK run is a warning unless it contains a bridged gap. All gate thresholds are recorded as Measure.
+- The trace-placement fix above was found by the real run and is now covered by a heavy-weave regression test.
+
+### Open questions
+
+- Comfort: the curvature spikes produce 591.8 and 2086.6 deg/s^2. Decide whether to add curvature continuity or a stronger curvature filter, or investigate the road-contact/SfM noise in those stretches. The route is already on the recapture list, so this is a pipeline question rather than a publication blocker.
+- Registration: the known cam0 horizontal prior p95 of 5.2 cm is route-wide, so every segment fails registration. Per-camera or per-stretch reporting would localise it.
+- Path to road: seg_0001 is just over the p95 gates (3.58 cm vertical, 10.34 cm lateral) while seg_0000 passes. The smoothing bound is global; decide whether gates should use a global p95 or the path should be smoothed per segment with continuity constraints.
+- Grade shows peaks around plus or minus 15 percent in the 10 m window; check whether they are real road grade or noise before the app uses them for speed.
+- The loop endpoint separation of 19.95 m is a capture fact, not a pipeline fault; no loop flag was set.
