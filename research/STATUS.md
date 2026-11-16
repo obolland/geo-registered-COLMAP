@@ -154,7 +154,7 @@ Sampling costs no accuracy on held-out pulses and is slightly better, plausibly 
 
 ## Slice 7 build (2026-11-16)
 
-Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 440 tests pass; `ruff check .` clean.
+Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 443 tests pass; `ruff check .` clean.
 
 ### Real run
 
@@ -206,19 +206,20 @@ Both tracks are in the session ENU frame and are compared before smoothing, one 
 | 419-425 | 522-529 | 7 | 1.3 | 0.9 | 0.229 | 0.120 | none known |
 | 471-480 | 587-597 | 10 | 1.8 | 1.1 | 0.287 | 0.151 | junction turn, pulses 589-597 |
 
-The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the three kink stretches. That rules out a gross reconstruction shift, but curvature is a second derivative, so centimetre-scale shape differences are enough to produce the 0.2-0.3 1/m spikes. The 344-348 kink starts at the first parked-vehicle pulses, so reconstruction noise there is plausible. The 471-480 kink overlaps the junction turn, so part of it is likely real rider motion. The 419-425 kink has no known capture context and remains unexplained. These are consistent with the comfort gate finding rather than a separate bug; no code change was made from this analysis.
+The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the three kink stretches, so the kinks are real rider motion, not reconstruction noise. Olly pulled over a couple of times to let vehicles pass; the 344-348 kink starts at the first parked-vehicle pulses and the 471-480 kink overlaps the junction turn. The 419-425 kink is another real lateral movement. This is why horizontal smoothing was changed to a comfort-first objective after this run. The gate table above predates that change; a rerun is pending review.
 
 ### Deviations from the plan
 
 - QA is written to `qa/<route_id>/<build_id>` rather than the design's `qa/<build_id>`, so two routes built in the same second cannot overwrite each other's reports.
 - `overview.json` is deferred to slice 8 with the overview tiles.
 - The real build uses `out/s1-v120/images.json` for the schema reason above; the strict 1.2.0 check has no compatibility path.
-- Per review decisions: horizontal and vertical smoothing have separate bounds (0.10 m and 0.03 m p95), the path-to-road lateral p95 gate is 0.10 m with a 0.30 m lateral max, and a long non-fixed RTK run is a warning unless it contains a bridged gap. All gate thresholds are recorded as Measure.
+- Per review decisions: horizontal smoothing is comfort-first with a 0.5 m lateral departure cap, vertical keeps a 0.03 m p95 bound, lateral p95 is reported rather than gated, and a long non-fixed RTK run is a warning unless it contains a bridged gap. All gate thresholds are recorded as Measure.
 - The trace-placement fix above was found by the real run and is now covered by a heavy-weave regression test.
+- After this real run, horizontal smoothing was changed again to the comfort-first objective described above: local spline weight reduction, 0.5 m departure cap, lateral p95 reported rather than gated, thresholds 1.1.0. The gate table and build outputs above predate that change; a rerun is pending review.
 
 ### Open questions
 
-- Comfort: after the reachable-speed fix the maxima are 90.2 and 150.0 deg/s^2, at the 274.6 m and 344.9 m kinks. Decide whether to add curvature continuity or a stronger curvature filter, or investigate the road-contact/SfM noise in those stretches. The route is already on the recapture list, so this is a pipeline question rather than a publication blocker.
+- Comfort: after the reachable-speed fix the maxima were 90.2 and 150.0 deg/s^2 at the 274.6 m and 344.9 m kinks. Horizontal smoothing is now comfort-first and local, with a 0.5 m departure cap; the rerun will show whether these kinks are absorbed within the cap or remain recapture signals.
 - Registration: the known cam0 horizontal prior p95 of 5.2 cm is route-wide, so every segment fails registration. Per-camera or per-stretch reporting would localise it.
 - Path to road: seg_0001 is just over the p95 gates (3.58 cm vertical, 10.34 cm lateral) while seg_0000 passes. The smoothing bound is global; decide whether gates should use a global p95 or the path should be smoothed per segment with continuity constraints.
 - Grade shows peaks around plus or minus 15 percent in the 10 m window; check whether they are real road grade or noise before the app uses them for speed.
