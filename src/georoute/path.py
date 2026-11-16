@@ -105,6 +105,7 @@ class RoadContact:
     height_above_road_m: float
     points: int
     nominal: bool
+    bridged: bool = False
 
 
 def road_contacts(poses, points, rig: Rig, frame: LocalFrame) -> list[RoadContact]:
@@ -132,7 +133,16 @@ def road_contacts(poses, points, rig: Rig, frame: LocalFrame) -> list[RoadContac
             contact, height, sigma = _fit_contact(points[near], origin, up, pose.pulse)
             nominal = False
         contacts.append(
-            RoadContact(pose.pulse, pose.t_gps_s, frame.to_ecef(contact), sigma, height, len(near), nominal)
+            RoadContact(
+                pose.pulse,
+                pose.t_gps_s,
+                frame.to_ecef(contact),
+                sigma,
+                height,
+                len(near),
+                nominal,
+                pose.bridged,
+            )
         )
     return contacts
 
@@ -212,6 +222,9 @@ class RiderPath:
     trace_s_m: np.ndarray
     trace_enu_m: np.ndarray
     trace_sigma_m: np.ndarray
+    trace_pulses: np.ndarray
+    trace_bridged: np.ndarray
+    trace_nominal: np.ndarray
     smoothing: dict
 
     @property
@@ -244,11 +257,14 @@ def rider_path(contacts, frame: LocalFrame, bound_m: float = SMOOTHING_BOUND_M) 
     enu = np.array([frame.from_ecef(c.ecef) for c in contacts])
     sigma = np.array([c.sigma_m for c in contacts])
     distance = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(enu, axis=0), axis=1))])
-    distance, enu, sigma = _collapse_stops(distance, enu, sigma)
+    distance, enu, sigma, groups = _collapse_stops(distance, enu, sigma)
     if len(distance) < 4:
         raise PathError(
             f"the trace has only {len(distance)} distinct positions, need at least 4 to fit a rider path"
         )
+    pulses = np.array([contacts[group[0]].pulse for group in groups])
+    bridged = np.array([any(contacts[i].bridged for i in group) for group in groups])
+    nominal = np.array([any(contacts[i].nominal for i in group) for group in groups])
     splines, smoothing = _smooth_to_bound(distance, enu, bound_m)
     dense_distance, dense_s, enu_dense, heading, curvature = _sample_path(splines, distance, enu)
     keep = np.concatenate([[True], np.diff(dense_s) > 0])
@@ -256,15 +272,18 @@ def rider_path(contacts, frame: LocalFrame, bound_m: float = SMOOTHING_BOUND_M) 
     enu_dense, heading, curvature = enu_dense[keep], heading[keep], curvature[keep]
     sigma_dense = np.interp(dense_distance, distance, sigma)
     return RiderPath(
-        dense_s,
-        enu_dense,
-        heading,
-        curvature,
-        sigma_dense,
-        distance,
-        enu,
-        sigma,
-        smoothing,
+        s_m=dense_s,
+        enu_m=enu_dense,
+        heading_rad=heading,
+        curvature_1pm=curvature,
+        sigma_m=sigma_dense,
+        trace_s_m=distance,
+        trace_enu_m=enu,
+        trace_sigma_m=sigma,
+        trace_pulses=pulses,
+        trace_bridged=bridged,
+        trace_nominal=nominal,
+        smoothing=smoothing,
     )
 
 
@@ -280,7 +299,7 @@ def _collapse_stops(distance, enu, sigma):
     collapsed_d = np.array([distance[group].mean() for group in groups])
     collapsed_enu = np.array([enu[group].mean(axis=0) for group in groups])
     collapsed_sigma = np.array([sigma[group].mean() for group in groups])
-    return collapsed_d, collapsed_enu, collapsed_sigma
+    return collapsed_d, collapsed_enu, collapsed_sigma, groups
 
 
 def _smooth_to_bound(distance, enu, bound_m):
@@ -352,6 +371,123 @@ def _sample_path(splines, distance, enu):
     speed = np.maximum(np.hypot(de, dn) ** 3, 1e-12)
     curvature = (de * d2n - dn * d2e) / speed
     return dense_distance, s, enu_dense, heading, curvature
+
+
+PROFILE_STEP_M = 1.0
+# Grade is rise over horizontal run, smoothed over about 10 m. It drives virtual speed, so it is computed
+# once here and published, never retuned by the app.
+GRADE_WINDOW_M = 10.0
+# One capture pass supports about a metre either side until the lateral pass is analysed.
+CORRIDOR_M = 1.0
+DEFAULT_SURFACE = "asphalt"
+
+
+@dataclass(frozen=True)
+class DistanceProfile:
+    """The published primitives at 1 m of route-global 3D distance. Heights are orthometric, grade is percent
+    of rise over horizontal run, and quality lists the reasons a sample is less trustworthy."""
+
+    s_m: np.ndarray
+    s_h_m: np.ndarray
+    lat_deg: np.ndarray
+    lon_deg: np.ndarray
+    h_ortho_m: np.ndarray
+    sigma_h_m: np.ndarray
+    grade_percent: np.ndarray
+    curvature_1pm: np.ndarray
+    corridor_left_m: np.ndarray
+    corridor_right_m: np.ndarray
+    surface: tuple[str, ...]
+    quality: tuple[tuple[str, ...], ...]
+
+
+def distance_profile(path: RiderPath, images, frame: LocalFrame, geoid) -> DistanceProfile:
+    """The 1 m profile. The path is evaluated at whole metres, plus the endpoint when the build is not a
+    whole number of metres. Heights come from each sample's own ECEF position and the geoid, never from a
+    frame's up axis; grade uses horizontal distance and the orthometric heights."""
+    whole = int(np.floor(path.length_m / PROFILE_STEP_M + 1e-9))
+    s = np.arange(whole + 1, dtype=float) * PROFILE_STEP_M
+    if s[-1] < path.length_m - 1e-9:
+        s = np.append(s, path.length_m)
+    enu, _, curvature, sigma = path.at(s)
+    s_h = np.interp(s, path.s_m, _horizontal_distance(path))
+    ecef = frame.to_ecef(enu)
+    lla = ecef_to_lla(ecef)
+    orthometric = np.asarray(geoid.orthometric_height(lla[:, 0], lla[:, 1], lla[:, 2]), float)
+    grade = _grade(s_h, orthometric)
+    flags = _image_quality(images)
+    nearest = _nearest(path.trace_s_m, s)
+    quality = []
+    for index in nearest:
+        sample = set(flags.get(int(path.trace_pulses[index]), ()))
+        if path.trace_bridged[index]:
+            sample.add("bridged-gap")
+        if path.trace_nominal[index]:
+            sample.add("surface-nominal")
+        quality.append(tuple(sorted(sample)))
+    count = len(s)
+    return DistanceProfile(
+        s,
+        s_h,
+        lla[:, 0].copy(),
+        lla[:, 1].copy(),
+        orthometric,
+        sigma,
+        grade,
+        curvature,
+        np.full(count, CORRIDOR_M),
+        np.full(count, CORRIDOR_M),
+        (DEFAULT_SURFACE,) * count,
+        tuple(quality),
+    )
+
+
+def _horizontal_distance(path: RiderPath) -> np.ndarray:
+    step = np.diff(path.enu_m[:, :2], axis=0)
+    return np.concatenate([[0.0], np.cumsum(np.hypot(step[:, 0], step[:, 1]))])
+
+
+def _grade(s_h, height):
+    """Least-squares rise over run in a window around each sample, shrinking at the ends. Taken over
+    horizontal distance so a climb's grade isn't diluted by the extra 3D path length."""
+    grade = np.empty(len(height))
+    half = GRADE_WINDOW_M / 2
+    for index, x in enumerate(s_h):
+        low = np.searchsorted(s_h, x - half, side="left")
+        high = np.searchsorted(s_h, x + half, side="right")
+        if high - low < 2:
+            raise PathError(f"profile at s={index} has too few samples to measure grade")
+        design = np.column_stack([s_h[low:high] - x, np.ones(high - low)])
+        slope = np.linalg.lstsq(design, height[low:high] - height[index], rcond=None)[0][0]
+        grade[index] = 100.0 * slope
+    return grade
+
+
+def _image_quality(images) -> dict[int, tuple[str, ...]]:
+    """Worst RTK solution and any time recovery at each capture pulse, from the ingest record."""
+    by_pulse: dict[int, dict] = {}
+    for image in images:
+        state = by_pulse.setdefault(int(image["pulse"]), {"carr": 2, "time": False})
+        state["carr"] = min(state["carr"], int(image["carr_soln"]))
+        state["time"] = state["time"] or "time-recovered" in image.get("flags", ())
+    result = {}
+    for pulse, state in by_pulse.items():
+        flags = []
+        if state["carr"] == 1:
+            flags.append("rtk-float")
+        elif state["carr"] != 2:
+            flags.append("rtk-none")
+        if state["time"]:
+            flags.append("time-recovered")
+        result[pulse] = tuple(sorted(flags))
+    return result
+
+
+def _nearest(trace_s, s):
+    index = np.searchsorted(trace_s, s)
+    left = np.clip(index - 1, 0, len(trace_s) - 1)
+    right = np.clip(index, 0, len(trace_s) - 1)
+    return np.where(np.abs(trace_s[left] - s) <= np.abs(trace_s[right] - s), left, right)
 
 
 def _pulse_times(images) -> dict[int, float]:

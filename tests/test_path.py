@@ -3,10 +3,12 @@ import pytest
 
 from georoute.geodesy import LocalFrame, ecef_from_enu_rotation, ecef_to_lla
 from georoute.path import (
+    CORRIDOR_M,
     NOMINAL_SURFACE_SIGMA_M,
     PathError,
     RigPose,
     RoadContact,
+    distance_profile,
     height_check,
     rider_path,
     rig_poses,
@@ -239,8 +241,8 @@ def test_height_check_reports_the_measured_pulses_against_the_rig_config():
     assert check["p50_m"] == pytest.approx(1.2, abs=1e-6)
 
 
-def contact_at(index, enu, sigma=0.01):
-    return RoadContact(index, index * 0.8, FRAME.to_ecef(enu), sigma, 1.2, 100, False)
+def contact_at(index, enu, sigma=0.01, nominal=False, bridged=False):
+    return RoadContact(index, index * 0.8, FRAME.to_ecef(enu), sigma, 1.2, 100, nominal, bridged)
 
 
 def straight_contacts(x, n=None, u=None):
@@ -333,3 +335,102 @@ def test_asking_for_a_point_outside_the_path_refuses():
         path.at([-1.0])
     with pytest.raises(PathError, match="outside"):
         path.at([path.length_m + 0.1])
+
+
+class SyntheticGeoid:
+    name = "OSGM15"
+
+    def __init__(self):
+        self.calls = 0
+
+    def orthometric_height(self, lat, lon, height):
+        self.calls += 1
+        return np.asarray(height, float) - 50.0
+
+    def provenance(self):
+        return {"name": self.name, "grid": "test", "sha256": "0" * 64}
+
+
+def profile_for(x, z=None, pulses=None, images=None, **contact_flags):
+    z = np.zeros_like(x) if z is None else z
+    pulses = range(len(x)) if pulses is None else pulses
+    contacts = [
+        contact_at(i, [e, 0.0, zz], **contact_flags) for i, (e, zz) in enumerate(zip(x, z, strict=True))
+    ]
+    contacts = [
+        RoadContact(p, c.t_gps_s, c.ecef, c.sigma_m, c.height_above_road_m, c.points, c.nominal, c.bridged)
+        for p, c in zip(pulses, contacts, strict=True)
+    ]
+    path = rider_path(contacts, FRAME)
+    images = make_images(pulses) if images is None else images
+    return path, distance_profile(path, images, FRAME, SyntheticGeoid())
+
+
+def test_a_flat_profile_has_zero_grade_and_the_sampled_primitive_channels():
+    _, profile = profile_for(np.arange(0.0, 10.0, 1.0))
+
+    np.testing.assert_allclose(profile.s_m, np.arange(0.0, 10.0))
+    np.testing.assert_allclose(profile.s_h_m, profile.s_m, atol=1e-6)
+    np.testing.assert_allclose(profile.grade_percent, 0.0, atol=1e-3)
+    np.testing.assert_allclose(profile.curvature_1pm, 0.0, atol=1e-4)
+    np.testing.assert_allclose(profile.h_ortho_m, 50.0, atol=1e-4)
+    np.testing.assert_allclose(profile.sigma_h_m, 0.01)
+    np.testing.assert_allclose(profile.corridor_left_m, CORRIDOR_M)
+    np.testing.assert_allclose(profile.corridor_right_m, CORRIDOR_M)
+    assert set(profile.surface) == {"asphalt"}
+    assert all(flags == () for flags in profile.quality)
+
+
+def test_a_constant_ramp_reports_its_canonical_physics_grade_end_to_end():
+    x = np.arange(0.0, 20.0, 0.5)
+    z = 0.05 * x
+    _, profile = profile_for(x, z)
+
+    np.testing.assert_allclose(profile.grade_percent, 5.0, atol=0.15)
+    assert profile.s_h_m[-1] == pytest.approx(19.5, abs=0.01)
+    assert profile.s_m[-1] == pytest.approx(19.5 * np.hypot(1.0, 0.05), abs=0.01)
+    np.testing.assert_allclose(profile.h_ortho_m, np.interp(profile.s_h_m, x, z) + 50.0, atol=0.01)
+
+
+def test_profile_quality_carries_rtk_time_nominal_surface_and_bridged_gaps():
+    x = np.arange(0.0, 10.0, 1.0)
+    images = make_images(range(10))
+    for image in images:
+        image["carr_soln"] = {3: 1, 6: 0}.get(image["pulse"], 2)
+        image["flags"] = ["time-recovered"] if image["pulse"] == 7 else []
+    contacts = [contact_at(i, [e, 0.0, 0.0], nominal=i == 2, bridged=i == 4) for i, e in enumerate(x)]
+    path = rider_path(contacts, FRAME)
+    profile = distance_profile(path, images, FRAME, SyntheticGeoid())
+
+    by_s = dict(zip(profile.s_m, profile.quality, strict=True))
+    assert by_s[3.0] == ("rtk-float",)
+    assert by_s[6.0] == ("rtk-none",)
+    assert by_s[7.0] == ("time-recovered",)
+    assert by_s[2.0] == ("surface-nominal",)
+    assert by_s[4.0] == ("bridged-gap",)
+    assert by_s[0.0] == ()
+
+
+def test_the_profile_includes_the_endpoint_when_the_route_is_not_a_whole_number_of_metres():
+    _, profile = profile_for(np.arange(0.0, 10.0, 0.5))
+
+    assert profile.s_m[-1] == pytest.approx(9.5, abs=0.01)
+    assert profile.s_m[-2] == pytest.approx(9.0)
+
+
+def test_profile_heights_are_geodetic_and_the_geoid_is_evaluated_for_every_sample():
+    geoid = SyntheticGeoid()
+    x = np.arange(0.0, 5.0, 0.5)
+    path = rider_path([contact_at(i, [e, 0.0, 0.0]) for i, e in enumerate(x)], FRAME)
+
+    profile = distance_profile(path, make_images(range(10)), FRAME, geoid)
+
+    from georoute.geodesy import ecef_to_lla
+
+    ecef = FRAME.to_ecef(path.at(profile.s_m)[0])
+    lat, lon, height = ecef_to_lla(ecef).T
+    np.testing.assert_allclose(profile.lat_deg, lat, atol=1e-9)
+    np.testing.assert_allclose(profile.lon_deg, lon, atol=1e-9)
+    np.testing.assert_allclose(profile.h_ortho_m, height - 50.0, atol=1e-6)
+    assert geoid.calls == 1
+    assert "OSGM15" not in str(profile.quality)
