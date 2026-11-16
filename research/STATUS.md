@@ -169,22 +169,22 @@ uv run georoute route-build ~/fieldtest2/colmap/s1-gsample \
 - The first attempt with `out/s1/images.json` refused on schema `georoute.images/1.1.0`; the file already carried `velocity_enu`. The Splat pipeline session regenerated it at 1.2.0 as `out/s1-v120/images.json` and verified its images and frame are identical to `out/s1`. The strict 1.2.0 check was kept.
 - An intermediate run exposed a QA indexing bug: raw road-contact distance was used as smoothed path arclength (509.478 m against 508.539 m). Fixed test-first in `0929964`: each trace sample now carries `trace_smoothed_m`; profile flags, segment gates and RTK runs use it, and raw distance remains only the spline parameter. The refusal QA reports from both attempts are retained under `qa/ft2-s1/`.
 - The comfort gate was then corrected in `156c473`: speed is no longer capped pointwise at each sample, but follows a reachable profile limited by 1.5 m/s^2 longitudinal acceleration forward and backward; yaw acceleration is the time derivative of v*kappa along that profile. The earlier build at `20261116T100323Z` is superseded; its QA is retained.
-- Final output package: `~/fieldtest2/routes/ft2-s1/20261116T100813Z/` (provenance commit `156c473`).
-- QA: `~/fieldtest2/routes/qa/ft2-s1/20261116T100813Z/` with `report.json`, `plan.png`, `profile.png` and `curvature.png`.
+- Final output package: `~/fieldtest2/routes/ft2-s1/20261116T103407Z/` (provenance commit `bef3cc9`, the anchored local comfort smoothing). The earlier `100323Z` and `100813Z` builds are superseded; their QA is retained.
+- QA: `~/fieldtest2/routes/qa/ft2-s1/20261116T103407Z/` with `report.json`, `plan.png`, `profile.png` and `curvature.png`.
 - Route: 508.54 m, loop false (start and end 19.95 m apart), ETRS89, OSGM15 grid sha256 `bf0ac81f1c0c33332693d7d606f335b793c3c2995b8e69eeb1350bd94adcde3b`, two segments, each the other's neighbour. `splats` is empty until slice 8.
 
 ### Gate table
 
-| Segment | s range (m) | Path p95 vertical | Path p95 lateral | Path lateral max | Comfort max yaw accel | Longest non-fixed | Max bridged gap | Registration | Status |
-|---|---|---|---|---|---|---|---|---|---|
-| seg_0000 | 0-300.00 | pass 2.81 cm | pass 9.50 cm | pass 17.57 cm | fail 90.2 deg/s^2 at s=274.6 m | pass 2.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
-| seg_0001 | 300.00-508.54 | fail 3.58 cm | fail 10.34 cm | pass 24.28 cm | fail 150.0 deg/s^2 at s=344.9 m | pass 0.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
+| Segment | s range (m) | Vertical p95 (gate) | Lateral p95 (result) | Lateral max (gate) | Comfort max yaw accel (s) | comfort_met | iterations | Longest non-fixed | Max bridged gap | Registration | Status |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| seg_0000 | 0-300.00 | pass 2.81 cm | 9.50 cm | pass 17.57 cm | fail 90.2 deg/s^2 at 274.6 m | false | 1 | pass 2.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
+| seg_0001 | 300.00-508.54 | fail 3.58 cm | 10.34 cm | pass 24.28 cm | fail 150.0 deg/s^2 at 344.9 m | false | 1 | pass 0.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
 
-Both segments are on the recapture list and carry `gate-failed` in the published segment quality. The comfort gate uses 18 m/s, capped in bends by 3 m/s^2 lateral acceleration and 1.5 m/s^2 longitudinal acceleration.
+Both segments are on the recapture list and carry `gate-failed` in the published segment quality. Lateral p95 is reported but not gated; vertical p95 stays at 3 cm and lateral max at 0.5 m. The comfort gate uses 18 m/s, capped in bends by 3 m/s^2 lateral acceleration and 1.5 m/s^2 longitudinal acceleration.
 
 - Height above road: 625 measured contacts, 0 nominal; fitted p5 1.124 m, p50 1.160 m, p95 1.215 m against the 1.18 m rig config. Median is 2.0 cm below the hand measurement and p95 3.5 cm above it.
 - Road points: 978,646 input, 932,315 used (track length at least 3, reprojection error at most 2 px).
-- Smoothing: horizontal parameter 1.2512, p95 lateral 9.97 cm; vertical parameter 0.1442, p95 vertical 2.92 cm; no FITPACK warnings.
+- Smoothing: horizontal parameter 1.2512, p95 lateral 9.97 cm, max 24.28 cm, comfort_met false, 1 iteration; vertical parameter 0.1442, p95 vertical 2.92 cm; no FITPACK warnings.
 - RTK: 2,456 of 2,464 images fixed and 8 float; 2 profile samples flagged `rtk-float` in seg_0000; 41 images flagged `time-recovered`, giving 10 profile samples in seg_0001. No bridged gaps and no nominal-surface samples.
 - Corridor: 1.0 m each side, marked unmeasured until the lateral pass is analysed.
 
@@ -206,7 +206,20 @@ Both tracks are in the session ENU frame and are compared before smoothing, one 
 | 419-425 | 522-529 | 7 | 1.3 | 0.9 | 0.229 | 0.120 | none known |
 | 471-480 | 587-597 | 10 | 1.8 | 1.1 | 0.287 | 0.151 | junction turn, pulses 589-597 |
 
-The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the three kink stretches, so the kinks are real rider motion, not reconstruction noise. Olly pulled over a couple of times to let vehicles pass; the 344-348 kink starts at the first parked-vehicle pulses and the 471-480 kink overlaps the junction turn. The 419-425 kink is another real lateral movement. This is why horizontal smoothing was changed to a comfort-first objective after this run. The gate table above predates that change; a rerun is pending review.
+The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the three kink stretches, so the kinks are real rider motion, not reconstruction noise. Olly pulled over a couple of times to let vehicles pass; the 344-348 kink starts at the first parked-vehicle pulses and the 471-480 kink overlaps the junction turn. The 419-425 kink is another real lateral movement.
+
+### Comfort outcome on the real kinks
+
+The comfort-first pass ran one iteration and accepted no candidate: every candidate that would bring a kink below 30 deg/s^2 needed more than the 0.5 m lateral departure cap. The final path therefore equals the 0.10 m p95 base fit. The candidate figures are from a single-window anchored target at the base s, using the mildest weight factor.
+
+| Kink (m) | Peak s (m) | Final local max yaw | Final max lateral departure | Best candidate yaw | Candidate departure | Absorbed |
+|---|---|---|---|---|---|---|
+| about 274 | 274.6 | 90.2 deg/s^2 | 10.1 cm | 8.6 deg/s^2 | 75.0 cm | no, cap |
+| about 345 | 344.9 | 150.0 deg/s^2 | 23.6 cm | 132.8 deg/s^2 | 70.6 cm | no, cap |
+| about 420 | 418.6 | 140.8 deg/s^2 | 10.5 cm | 45.6 deg/s^2 | 54.8 cm | no, cap |
+| about 475 | 470.9 | 87.8 deg/s^2 | 24.3 cm | 79.7 deg/s^2 | 59.3 cm | no, cap |
+
+The 274 m kink could be made comfortable at the cost of 75 cm of departure, which is outside the captured band; the others need 55-71 cm and two still exceed the comfort limit at that departure. None is absorbed within the cap, so the real route remains a recapture signal rather than a publishable comfortable path.
 
 ### Deviations from the plan
 
@@ -215,11 +228,11 @@ The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the thre
 - The real build uses `out/s1-v120/images.json` for the schema reason above; the strict 1.2.0 check has no compatibility path.
 - Per review decisions: horizontal smoothing is comfort-first with a 0.5 m lateral departure cap, vertical keeps a 0.03 m p95 bound, lateral p95 is reported rather than gated, and a long non-fixed RTK run is a warning unless it contains a bridged gap. All gate thresholds are recorded as Measure.
 - The trace-placement fix above was found by the real run and is now covered by a heavy-weave regression test.
-- After this real run, horizontal smoothing was changed again to the comfort-first objective described above: a local window around each violation is re-targeted to the trace with lowered weights while the rest is anchored to the current fit, s stays fixed, the departure cap is 0.5 m, lateral p95 is reported rather than gated, and thresholds are 1.1.0. The gate table and build outputs above predate that change; a rerun is pending review.
+- Horizontal smoothing is the comfort-first anchored local target described above: a local window around each violation is re-targeted to the trace with lowered weights while the rest is anchored to the current fit, s stays fixed, the departure cap is 0.5 m, lateral p95 is reported rather than gated, and thresholds are 1.1.0. The gate table above is from that build.
 
 ### Open questions
 
-- Comfort: after the reachable-speed fix the maxima were 90.2 and 150.0 deg/s^2 at the 274.6 m and 344.9 m kinks. Horizontal smoothing is now comfort-first and local, with a 0.5 m departure cap; the rerun will show whether these kinks are absorbed within the cap or remain recapture signals.
+- Comfort: the real kinks are not absorbed within the 0.5 m departure cap; the candidates that would fix them need 55-75 cm. This may mean the cap, the 22 m window, or the fixed base s is too restrictive for these capture pull-overs, or that the route genuinely needs recapture. Two separated 0.6 m synthetic pull-overs also cannot meet comfort within the cap, while a single 0.6 m pull-over over 5 m and two 0.45 m pull-overs can; the window size is the first thing to test if the design changes.
 - Registration: the known cam0 horizontal prior p95 of 5.2 cm is route-wide, so every segment fails registration. Per-camera or per-stretch reporting would localise it.
 - Path to road: seg_0001 is just over the p95 gates (3.58 cm vertical, 10.34 cm lateral) while seg_0000 passes. The smoothing bound is global; decide whether gates should use a global p95 or the path should be smoothed per segment with continuity constraints.
 - Grade shows peaks around plus or minus 15 percent in the 10 m window; check whether they are real road grade or noise before the app uses them for speed.
