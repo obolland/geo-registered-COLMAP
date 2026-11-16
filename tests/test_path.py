@@ -503,17 +503,59 @@ def test_profile_heights_are_geodetic_and_the_geoid_is_evaluated_for_every_sampl
 def test_comfort_first_smoothing_absorbs_a_pull_over_locally():
     x = np.arange(0.0, 120.0, 0.2)
     pull_over = np.zeros_like(x)
-    mask = (x >= 45.0) & (x <= 55.0)
-    pull_over[mask] = 0.6 * np.sin(np.pi * (x[mask] - 45.0) / 10.0) ** 2
+    mask = (x >= 47.5) & (x <= 52.5)
+    pull_over[mask] = 0.6 * np.sin(np.pi * (x[mask] - 47.5) / 5.0) ** 2
     path = rider_path(straight_contacts(x, n=pull_over), FRAME)
 
     smoothing = path.smoothing["horizontal"]
     assert smoothing["comfort_met"] is True
     assert smoothing["max_yaw_accel_deg_s2"] <= 30.0
     assert smoothing["max_lateral_m"] <= 0.5
-    lateral = path.trace_fit_enu_m[:, 1] - path.trace_enu_m[:, 1]
+    lateral = path.trace_fit_enu_m[:, 1] - path.trace_base_fit_enu_m[:, 1]
     away = (x < 30.0) | (x > 70.0)
     assert np.abs(lateral[away]).max() < 0.02
+
+
+def test_two_separated_pull_overs_are_both_fixed_without_moving_the_middle():
+    x = np.arange(0.0, 150.0, 0.2)
+    pulls = np.zeros_like(x)
+    for centre in (40.0, 110.0):
+        mask = (x >= centre - 3.0) & (x <= centre + 3.0)
+        pulls[mask] += 0.45 * np.sin(np.pi * (x[mask] - centre + 3.0) / 6.0) ** 2
+    path = rider_path(straight_contacts(x, n=pulls), FRAME)
+
+    smoothing = path.smoothing["horizontal"]
+    assert smoothing["comfort_met"] is True
+    assert smoothing["iterations"] >= 1
+    assert smoothing["max_lateral_m"] <= 0.5
+    lateral = path.trace_fit_enu_m[:, 1] - path.trace_base_fit_enu_m[:, 1]
+    between_or_outside = ((x > 50.0) & (x < 95.0)) | (x < 20.0) | (x > 130.0)
+    assert np.abs(lateral[between_or_outside]).max() < 0.02
+
+
+def test_two_pull_overs_are_processed_order_independently():
+    x = np.arange(0.0, 150.0, 0.2)
+    pulls = np.zeros_like(x)
+    for centre in (40.0, 110.0):
+        mask = (x >= centre - 3.0) & (x <= centre + 3.0)
+        pulls[mask] += 0.45 * np.sin(np.pi * (x[mask] - centre + 3.0) / 6.0) ** 2
+    forward = rider_path(straight_contacts(x, n=pulls), FRAME)
+    reverse = rider_path(straight_contacts(x, n=pulls[::-1]), FRAME)
+    forward_lateral = forward.trace_fit_enu_m[:, 1] - forward.trace_enu_m[:, 1]
+    reverse_lateral = reverse.trace_fit_enu_m[:, 1] - reverse.trace_enu_m[:, 1]
+
+    assert np.max(np.abs(forward_lateral - reverse_lateral[::-1])) < 0.01
+
+
+def test_the_comfort_iteration_cap_raises_rather_than_returning_quietly(monkeypatch):
+    x = np.arange(0.0, 120.0, 0.2)
+    pull_over = np.zeros_like(x)
+    mask = (x >= 45.0) & (x <= 55.0)
+    pull_over[mask] = 0.6 * np.sin(np.pi * (x[mask] - 45.0) / 10.0) ** 2
+    monkeypatch.setattr(path_module, "MAX_COMFORT_ITERATIONS", 0)
+
+    with pytest.raises(PathError, match="did not settle"):
+        rider_path(straight_contacts(x, n=pull_over), FRAME)
 
 
 def test_a_height_step_is_smoothed_into_finite_heights_and_grade():
