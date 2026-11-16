@@ -416,7 +416,11 @@ def _runs(mask):
 
 
 def write_qa(
-    out_dir, report: QAReport, path: RiderPath | None = None, profile: DistanceProfile | None = None
+    out_dir,
+    report: QAReport,
+    path: RiderPath | None = None,
+    profile: DistanceProfile | None = None,
+    route: SegmentedRoute | None = None,
 ) -> Path:
     """Writes qa/<route_id>/<build_id>/report.json and, when given the path and profile, the review plots.
     This runs for a failing build too: the report is the record of why the segment is on the recapture
@@ -426,7 +430,7 @@ def write_qa(
     plots = {}
     if path is not None and profile is not None:
         try:
-            plots = write_plots(folder, path, profile)
+            plots = write_plots(folder, path, profile, route)
         except Exception as e:
             plots = {"error": str(e)}
     report = QAReport(
@@ -442,7 +446,9 @@ def write_qa(
     return folder
 
 
-def write_plots(folder, path: RiderPath, profile: DistanceProfile) -> dict:
+def write_plots(
+    folder, path: RiderPath, profile: DistanceProfile, route: SegmentedRoute | None = None
+) -> dict:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -461,11 +467,22 @@ def write_plots(folder, path: RiderPath, profile: DistanceProfile) -> dict:
     axis.plot(
         path.enu_m[::stride, 0], path.enu_m[::stride, 1], color="tab:blue", lw=1.2, label="smoothed path"
     )
+    if route is not None:
+        for segment in route.segments[:-1]:
+            boundary = path.at([segment.s_end])[0][0]
+            axis.plot(boundary[0], boundary[1], "x", color="black", markersize=8)
+            axis.annotate(
+                segment.seg_id,
+                (boundary[0], boundary[1]),
+                xytext=(4, 4),
+                textcoords="offset points",
+                fontsize=8,
+            )
     axis.set_aspect("equal")
     axis.set_xlabel("east (m)")
     axis.set_ylabel("north (m)")
     axis.legend()
-    axis.set_title("Plan view")
+    axis.set_title("Plan view (segment boundaries marked)")
     plan = folder / "plan.png"
     figure.savefig(plan, dpi=120, bbox_inches="tight")
     plt.close(figure)
@@ -482,10 +499,27 @@ def write_plots(folder, path: RiderPath, profile: DistanceProfile) -> dict:
     plt.close(figure)
 
     figure, axis = plt.subplots(figsize=(11, 4))
-    axis.plot(profile.s_m, profile.curvature_1pm, color="tab:green")
+    axis.plot(profile.s_m, profile.curvature_1pm, color="tab:green", label="curvature")
+    limit = LATERAL_ACCEL_LIMIT_MPS2 / DESIGN_SPEED_MPS**2
+    axis.axhline(limit, color="tab:red", ls="--", lw=1, label="design-speed lateral limit")
+    axis.axhline(-limit, color="tab:red", ls="--", lw=1)
+    excess = np.abs(profile.curvature_1pm) > limit
+    axis.fill_between(
+        profile.s_m,
+        limit,
+        profile.curvature_1pm,
+        where=excess,
+        color="tab:red",
+        alpha=0.2,
+        label="beyond the limit: bend speed policy",
+    )
     axis.set_xlabel("distance (m)")
     axis.set_ylabel("curvature (1/m)")
-    axis.set_title("Curvature")
+    axis.set_title(
+        f"Curvature; lateral limit {limit:.4f} 1/m at {DESIGN_SPEED_MPS:g} m/s, "
+        f"{LATERAL_ACCEL_LIMIT_MPS2:g} m/s^2"
+    )
+    axis.legend(loc="best", fontsize=8)
     figure.savefig(folder / "curvature.png", dpi=120, bbox_inches="tight")
     plt.close(figure)
     return {"plan": "plan.png", "profile": "profile.png", "curvature": "curvature.png"}

@@ -216,9 +216,9 @@ def test_the_qa_report_is_written_even_when_a_gate_fails(tmp_path):
 
 
 def test_the_review_plots_are_written(tmp_path):
-    path, profile, _ = clean_route()
+    path, profile, route = clean_route()
 
-    plots = write_plots(tmp_path, path, profile)
+    plots = write_plots(tmp_path, path, profile, route)
 
     for name in ("plan", "profile", "curvature"):
         assert plots[name] == f"{name}.png"

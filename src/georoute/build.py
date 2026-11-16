@@ -197,7 +197,7 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
             "parameters": parameters,
         },
     }
-    qa_folder = write_qa(out, qa, path, profile)
+    qa_folder = write_qa(out, qa, path, profile, route)
     final = write_package(out, route_id, build_id, route, meta)
     return {
         "route_id": route_id,
