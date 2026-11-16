@@ -1,4 +1,4 @@
-# Calibrated from /Users/olly/fieldtest2/colmap/subset: orientations relative to cam2, positions moved 20 mm
+# Calibrated from /Users/olly/fieldtest2/colmap/s1-gsample: orientations relative to cam2, positions moved 26 mm
 # behind the lens front to the optical centre. hand_* keys are the original measurements.
 
 schema = "georoute.rig/1.0.0"
@@ -17,17 +17,17 @@ phase_centre_offset_m = [0.0, 0.0, 0.0]
 curtain_travel_ms = 0.0
 
 [calibration]
-source = "/Users/olly/fieldtest2/colmap/subset"
+source = "/Users/olly/fieldtest2/colmap/s1-gsample"
 reference = 2
-axial_offset_m = 0.0203
+axial_offset_m = 0.0263
 
 [[camera]]
 index = 0
 role = "right side, angled forward"
 folder = "cam0"
 serial = "363073016649"
-position_in_rig_m = [0.3508, 0.0775, 0.035]
-yaw_pitch_roll_deg = [-40.45, 0.01, 0.34]
+position_in_rig_m = [0.347, 0.0729, 0.035]
+yaw_pitch_roll_deg = [-40.34, -0.01, 0.34]
 hand_position_in_rig_m = [0.364, 0.093, 0.035]
 hand_yaw_pitch_roll_deg = [-50.0, -0.3, 0.0]
 
@@ -36,8 +36,8 @@ index = 1
 role = "forward-right"
 folder = "cam1"
 serial = "013070043618"
-position_in_rig_m = [0.1231, 0.1017, 0.0347]
-yaw_pitch_roll_deg = [-2.48, 0.81, -0.17]
+position_in_rig_m = [0.1229, 0.0957, 0.0346]
+yaw_pitch_roll_deg = [-2.48, 0.82, -0.17]
 hand_position_in_rig_m = [0.124, 0.122, 0.035]
 hand_yaw_pitch_roll_deg = [0.0, 0.2, 0.0]
 
@@ -46,7 +46,7 @@ index = 2
 role = "forward-left"
 folder = "cam2"
 serial = "353073007602"
-position_in_rig_m = [-0.125, 0.1017, 0.0348]
+position_in_rig_m = [-0.125, 0.0957, 0.0347]
 yaw_pitch_roll_deg = [0.0, 0.6, 0.0]
 hand_position_in_rig_m = [-0.125, 0.122, 0.035]
 hand_yaw_pitch_roll_deg = [0.0, 0.6, 0.0]
@@ -56,7 +56,7 @@ index = 3
 role = "left side, angled forward"
 folder = "cam3"
 serial = "023071108155"
-position_in_rig_m = [-0.352, 0.0744, 0.035]
-yaw_pitch_roll_deg = [39.76, -0.01, -0.33]
+position_in_rig_m = [-0.3482, 0.0697, 0.035]
+yaw_pitch_roll_deg = [39.64, -0.01, -0.33]
 hand_position_in_rig_m = [-0.365, 0.09, 0.035]
 hand_yaw_pitch_roll_deg = [50.0, -0.8, 0.0]
