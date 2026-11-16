@@ -1,0 +1,12 @@
+
+=== system packages (19:59:17)
+NVIDIA L4, 23034 MiB, 595.112.07
+
+=== CUDA toolkit (20:00:37)
+Build cuda_12.9.r12.9/compiler.36037853_0
+using /usr/local/cuda-12.9 with torch wheel index cu128
+
+=== python environment (20:00:38)
+
+=== gsplat (compiled ahead of time; takes several minutes) (20:02:31)
+
