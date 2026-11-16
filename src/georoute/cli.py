@@ -95,6 +95,20 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--route-id", required=True)
     route.add_argument("--segment-length", type=float, default=1000.0, metavar="METRES")
     route.epilog = "exit status: 0 all QA gates pass, 1 built with a failing segment, 2 refused"
+    export = sub.add_parser("splat-export", help="export one splat training block from a refined workspace")
+    export.add_argument("workspace", type=Path, help="COLMAP workspace with sparse/refined and priors.json")
+    export.add_argument("--images-root", type=Path, required=True, help="folder holding cam0..camN")
+    export.add_argument("--route", type=Path, required=True, help="published route package directory")
+    export.add_argument("--rig", type=Path, required=True)
+    export.add_argument("--out", type=Path, required=True, help="folder for <block_id>")
+    export.add_argument("--block-start", type=float, required=True, metavar="METRES")
+    export.add_argument("--block-length", type=float, default=100.0, metavar="METRES")
+    export.add_argument("--margin", type=float, default=25.0, metavar="METRES")
+    export.add_argument("--data-factor", type=int, default=4)
+    export.add_argument("--holdout-every", type=int, default=10)
+    export.add_argument("--point-radius", type=float, default=60.0, metavar="METRES")
+    export.add_argument("--block-id")
+    export.epilog = "exit status: 0 exported, 1 refused or failed"
     return parser
 
 
@@ -121,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         return _rig_check(args)
     if args.command == "route-build":
         return _route_build(args)
+    if args.command == "splat-export":
+        return _splat_export(args)
     parser.print_help()
     return 0
 
@@ -384,3 +400,35 @@ def _route_build(args) -> int:
     print(f"package: {summary['package']}")
     print(f"qa: {summary['qa']}")
     return 1 if summary["status"] == "fail" else 0
+
+
+def _splat_export(args) -> int:
+    from georoute.splat import SplatExportError, export_block
+
+    try:
+        print(f"exporting splat block from {args.workspace} ...", flush=True)
+        result = export_block(
+            args.workspace,
+            args.images_root,
+            args.route,
+            load_rig(args.rig),
+            args.out,
+            args.block_start,
+            block_length=args.block_length,
+            margin=args.margin,
+            data_factor=args.data_factor,
+            holdout_every=args.holdout_every,
+            point_radius_m=args.point_radius,
+            block_id=args.block_id,
+        )
+    except (SplatExportError, RigError, OSError, ValueError, KeyError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    counts = result["counts"]
+    print(
+        f"block {args.block_start:g}-{args.block_start + args.block_length:g} m: "
+        f"{counts['train_images']} train images, {counts['heldout_images']} held out, "
+        f"{counts['points']} points from {counts['input_points']} input"
+    )
+    print(f"block: {Path(args.out) / (args.block_id or f's{args.block_start:g}-l{args.block_length:g}')}")
+    return 0
