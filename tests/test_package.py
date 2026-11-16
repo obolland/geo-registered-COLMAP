@@ -19,7 +19,20 @@ META = {
     "session_id": "20261114T133719Z",
     "app_defaults": {"design_speed_mps": 18.0, "corridor_measured": False},
     "qa": {"status": "not-run"},
-    "provenance": {"georoute": "test", "commit": "abc"},
+    "provenance": {
+        "sessions": ["20261114T133719Z"],
+        "rig_sha256": "0" * 64,
+        "pipeline_commit": "abc",
+        "tool_versions": {
+            "georoute": "0.1.0",
+            "python": "3.12",
+            "numpy": "2.1",
+            "scipy": "1.18",
+            "pyproj": "3.8",
+            "pycolmap": "4.2.1",
+        },
+        "parameters": {"segment_length_m": 10.0, "smoothing_bound_m": 0.1},
+    },
 }
 
 
@@ -107,7 +120,7 @@ def test_the_package_is_written_to_staging_and_moved_into_place(tmp_path):
     assert manifest["distance_m"] == pytest.approx(route.distance_m)
     assert manifest["loop"] is False
     assert manifest["splats"] == []
-    assert manifest["provenance"]["commit"] == "abc"
+    assert manifest["provenance"]["pipeline_commit"] == "abc"
     assert manifest["segments"][0]["origin"]["ecef"] == pytest.approx(
         route.segments[0].origin.origin_ecef.tolist()
     )
