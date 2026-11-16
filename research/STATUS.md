@@ -154,7 +154,7 @@ Sampling costs no accuracy on held-out pulses and is slightly better, plausibly 
 
 ## Slice 7 build (2026-11-16)
 
-Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 438 tests pass; `ruff check .` clean.
+Built on branch `slice7` (not pushed and not merged): `georoute.path` (rig pose per pulse, robust road contact, separate horizontal and vertical smoothing, 1 m profile), `georoute.geoid` (OSGM15), `georoute.package` (segment frames, 3D neighbours, atomic publication), `georoute.qa` (per-segment gates and plots), `georoute.build` and the `route-build` CLI, plus `schemas/route|path|profile-1.0.0.json`. 440 tests pass; `ruff check .` clean.
 
 ### Real run
 
@@ -168,18 +168,19 @@ uv run georoute route-build ~/fieldtest2/colmap/s1-gsample \
 
 - The first attempt with `out/s1/images.json` refused on schema `georoute.images/1.1.0`; the file already carried `velocity_enu`. The Splat pipeline session regenerated it at 1.2.0 as `out/s1-v120/images.json` and verified its images and frame are identical to `out/s1`. The strict 1.2.0 check was kept.
 - An intermediate run exposed a QA indexing bug: raw road-contact distance was used as smoothed path arclength (509.478 m against 508.539 m). Fixed test-first in `0929964`: each trace sample now carries `trace_smoothed_m`; profile flags, segment gates and RTK runs use it, and raw distance remains only the spline parameter. The refusal QA reports from both attempts are retained under `qa/ft2-s1/`.
-- Output package: `~/fieldtest2/routes/ft2-s1/20261116T100323Z/`.
-- QA: `~/fieldtest2/routes/qa/ft2-s1/20261116T100323Z/` with `report.json`, `plan.png`, `profile.png` and `curvature.png`.
+- The comfort gate was then corrected in `156c473`: speed is no longer capped pointwise at each sample, but follows a reachable profile limited by 1.5 m/s^2 longitudinal acceleration forward and backward; yaw acceleration is the time derivative of v*kappa along that profile. The earlier build at `20261116T100323Z` is superseded; its QA is retained.
+- Final output package: `~/fieldtest2/routes/ft2-s1/20261116T100813Z/` (provenance commit `156c473`).
+- QA: `~/fieldtest2/routes/qa/ft2-s1/20261116T100813Z/` with `report.json`, `plan.png`, `profile.png` and `curvature.png`.
 - Route: 508.54 m, loop false (start and end 19.95 m apart), ETRS89, OSGM15 grid sha256 `bf0ac81f1c0c33332693d7d606f335b793c3c2995b8e69eeb1350bd94adcde3b`, two segments, each the other's neighbour. `splats` is empty until slice 8.
 
 ### Gate table
 
 | Segment | s range (m) | Path p95 vertical | Path p95 lateral | Path lateral max | Comfort max yaw accel | Longest non-fixed | Max bridged gap | Registration | Status |
 |---|---|---|---|---|---|---|---|---|---|
-| seg_0000 | 0-300.00 | pass 2.81 cm | pass 9.50 cm | pass 17.57 cm | fail 591.8 deg/s^2 | pass 2.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
-| seg_0001 | 300.00-508.54 | fail 3.58 cm | fail 10.34 cm | pass 24.28 cm | fail 2086.6 deg/s^2 | pass 0.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
+| seg_0000 | 0-300.00 | pass 2.81 cm | pass 9.50 cm | pass 17.57 cm | fail 90.2 deg/s^2 at s=274.6 m | pass 2.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
+| seg_0001 | 300.00-508.54 | fail 3.58 cm | fail 10.34 cm | pass 24.28 cm | fail 150.0 deg/s^2 at s=344.9 m | pass 0.0 m | pass 0.0 m | fail cam0 5.2 cm | fail |
 
-Both segments are on the recapture list and carry `gate-failed` in the published segment quality. The comfort gate uses 18 m/s, capped in bends by 3 m/s^2 lateral acceleration.
+Both segments are on the recapture list and carry `gate-failed` in the published segment quality. The comfort gate uses 18 m/s, capped in bends by 3 m/s^2 lateral acceleration and 1.5 m/s^2 longitudinal acceleration.
 
 - Height above road: 625 measured contacts, 0 nominal; fitted p5 1.124 m, p50 1.160 m, p95 1.215 m against the 1.18 m rig config. Median is 2.0 cm below the hand measurement and p95 3.5 cm above it.
 - Road points: 978,646 input, 932,315 used (track length at least 3, reprojection error at most 2 px).
@@ -192,7 +193,20 @@ Both segments are on the recapture list and carry `gate-failed` in the published
 - `plan.png`: road-contact trace against the smoothed path, with the segment boundary marked.
 - `profile.png`: orthometric height and grade against distance.
 - `curvature.png`: signed curvature with the design-speed lateral limit (0.0093 1/m at 18 m/s and 3 m/s^2) and the beyond-limit regions shaded.
-- Curvature has sharp spikes around s = 275, 344-348, 419-425 and 471 m despite a smooth-looking plan view. Those spikes drive the comfort failures; they are not yet explained.
+- Curvature has sharp spikes around s = 275, 344-348, 419-425 and 471-480 m despite a smooth-looking plan view. Those spikes drive the comfort failures.
+
+### Kink analysis against the RTK antenna
+
+Both tracks are in the session ENU frame and are compared before smoothing, one antenna position per pulse. A constant offset is removed per stretch, then the residual is projected across the road-contact tangent. All figures are centimetres unless stated. Pulse numbers and route s are different counters; the context column gives the pulse numbers.
+
+| Stretch s (m) | Pulses | Samples | Max lateral difference | RMS lateral | Max curvature (1/m) | Max dkappa/ds (1/m^2) | Context |
+|---|---|---|---|---|---|---|---|
+| 270-280 | 338-349 | 11 | 1.3 | 0.5 | 0.106 | 0.046 | none known |
+| 344-348 | 429-433 | 5 | 1.2 | 0.8 | 0.329 | 0.232 | start of the parked-vehicle stretch, pulses 430-468 |
+| 419-425 | 522-529 | 7 | 1.3 | 0.9 | 0.229 | 0.120 | none known |
+| 471-480 | 587-597 | 10 | 1.8 | 1.1 | 0.287 | 0.151 | junction turn, pulses 589-597 |
+
+The antenna and the road-contact trace agree laterally to 1.2-1.8 cm in the three kink stretches. That rules out a gross reconstruction shift, but curvature is a second derivative, so centimetre-scale shape differences are enough to produce the 0.2-0.3 1/m spikes. The 344-348 kink starts at the first parked-vehicle pulses, so reconstruction noise there is plausible. The 471-480 kink overlaps the junction turn, so part of it is likely real rider motion. The 419-425 kink has no known capture context and remains unexplained. These are consistent with the comfort gate finding rather than a separate bug; no code change was made from this analysis.
 
 ### Deviations from the plan
 
@@ -204,7 +218,7 @@ Both segments are on the recapture list and carry `gate-failed` in the published
 
 ### Open questions
 
-- Comfort: the curvature spikes produce 591.8 and 2086.6 deg/s^2. Decide whether to add curvature continuity or a stronger curvature filter, or investigate the road-contact/SfM noise in those stretches. The route is already on the recapture list, so this is a pipeline question rather than a publication blocker.
+- Comfort: after the reachable-speed fix the maxima are 90.2 and 150.0 deg/s^2, at the 274.6 m and 344.9 m kinks. Decide whether to add curvature continuity or a stronger curvature filter, or investigate the road-contact/SfM noise in those stretches. The route is already on the recapture list, so this is a pipeline question rather than a publication blocker.
 - Registration: the known cam0 horizontal prior p95 of 5.2 cm is route-wide, so every segment fails registration. Per-camera or per-stretch reporting would localise it.
 - Path to road: seg_0001 is just over the p95 gates (3.58 cm vertical, 10.34 cm lateral) while seg_0000 passes. The smoothing bound is global; decide whether gates should use a global p95 or the path should be smoothed per segment with continuity constraints.
 - Grade shows peaks around plus or minus 15 percent in the 10 m window; check whether they are real road grade or noise before the app uses them for speed.
