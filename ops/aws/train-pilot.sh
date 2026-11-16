@@ -51,7 +51,8 @@ upload_results() {
     exit 2
 }
 [[ -f $ROOT/env.sh ]] || { echo "missing $ROOT/env.sh; this is not the training instance" >&2; exit 2; }
-actual_commit=$(git -C "$ROOT/gsplat" rev-parse HEAD)
+# As the owner: git refuses a repository owned by another user ("dubious ownership") when run as root.
+actual_commit=$(sudo -H -u "$OWNER" git -C "$ROOT/gsplat" rev-parse HEAD)
 [[ $actual_commit == "$GSPLAT_COMMIT" ]] || {
     echo "gsplat is at $actual_commit, expected $GSPLAT_COMMIT; refusing to change the JIT build" >&2
     exit 2
