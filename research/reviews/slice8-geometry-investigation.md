@@ -647,3 +647,98 @@ all 72 held-out views and the failing training views, and if the gain holds, imp
 same rule in `PruneAfterRefineStrategy` and run one 30k diagnostic with 0.7 m path-tube
 pruning. No AWS resource was started for this inspection; only read-only `aws s3 cp` was
 used.
+
+## Combined retrain preparation (2026-11-17)
+
+Commit `58f1d75` combines three changes. The job environment is
+`ops/aws/jobs/pilot-combined-2026-11-17.env`.
+
+### Path-tube prune
+
+The strategy now builds the continuous training-camera path in the Runner from the train
+split, one polyline per camera stream, joining consecutive training images only when their
+spacing is <= 2 m. On this block that yields 656 segments, length 0.61-2.00 m,
+total 597 m across the four streams. The two selected stretches are not joined. The
+prune mask removes an opaque splat when
+
+`distance_to_path - max_3d_scale <= NEAR_PRUNE_M * parser_transform_scale`
+
+so the body reaches into the 0.7 m tube. It runs every `refine_every` from step 600 and
+after `refine_stop_iter`. Normalisation is handled by the parser transform scale, so it is
+correct under both `--normalize_world_space` and `--no-normalize_world_space`.
+
+Local verification: the exact patch applies to pinned gsplat 512d366, `py_compile`
+passes, `import simple_trainer` passes, and `simple_trainer.py default` parses
+`--data_factor 2 --depth-loss --depth-lambda 0.005 --strategy.near-prune-m 0.7
+--no-normalize_world_space --near_plane 0.01 --help`. A synthetic CPU step removes a
+0.5 m point from a 10 m path and keeps a 2 m point; normalised case world_scale 2.0
+removes 1.3 parser units and keeps 2.0; the before-stop step 10000 also prunes and keeps
+the strategy state lengths aligned after `remove`. On the pruned 30k checkpoint the path
+mask removes 3,938 opaque splats.
+
+### Cull confirmation
+
+The full-72 CPU held-out pass was started but two working-stretch views exceeded the CPU
+render budget; the selected path-cull results are:
+
+| view | no cull | path ellipsoid | source |
+|---|---:|---:|---|
+| p180 cam0 held-out | 7.05 | 16.82 | full polyline |
+| p180 cam3 held-out | 5.98 | 14.08 | sampled tube |
+| p190 cam0 held-out | 8.0 | 15.77 | sampled tube |
+| p190 cam3 held-out | 9.8 | 16.93 | sampled tube |
+| p200 cam1 held-out | 10.9 | 16.07 | full polyline |
+| p200 cam0 held-out | 14.07 | 13.38 | sampled tube |
+| p300 cam1 held-out | 24.4 | 24.12 | full polyline, fast cap |
+| p300 cam0 held-out | 22.94 | 22.52 | sampled tube |
+| p300 cam3 held-out | 20.24 | 20.22 | sampled tube |
+
+Training selected cam0, same cull: p171 16.34 -> 17.31; p189 18.59 -> 15.18; p209
+22.79 -> 22.44; p211 23.65 -> 23.18. The post-hoc cull is mixed: it strongly helps the
+near-camera held-out views but can remove useful near surfaces in already-working training
+views. It is not a substitute for the training-time rule, which removes during growth and
+lets the model regrow smaller surfaces; it is a warning that a 0.7 m ellipsoid tube may be
+too broad in the working stretch. The job keeps the requested 0.7 m rule; if the first
+checkpoint shows working-view loss, add a minimum-scale filter or reduce the tube radius.
+
+The full-72 aggregate was therefore not completed. The job decision should use the
+training-time result, not this post-hoc table alone.
+
+### Factor-2 images
+
+The block already had `images_4` (1.35 GB, 732 files) but no `images_2`. Generated
+locally from the undistorted `images` folder at half size, preserving relative `.png`
+names: `~/fieldtest2/splat/s160-l100/images_2`, 732 files, 4.70 GiB (4.81 GB decimal).
+It must be uploaded before the run:
+
+`aws s3 sync ~/fieldtest2/splat/s160-l100/images_2 s3://georoute-splat-data-086341361260/blocks/s160-l100/images_2/ --only-show-errors`
+
+Images are about 2688-2701 x 1762-1768, matching the factor-2 parser expectation after
+the usual undistort ROI scaling. `train-pilot.sh` now sets `DATA_FACTOR` (default 4),
+validates `images_${DATA_FACTOR}`, and passes `--data_factor $DATA_FACTOR`.
+
+### Depth supervision
+
+At pinned gsplat 512d366 the trainer exposes `--depth-loss` and `--depth-lambda`
+(default 0.01). With `depth_loss` enabled, `Dataset(load_depths=True)` projects the sparse
+COLMAP points for each training image into the image and stores their camera depths;
+training samples the rendered expected depth at those pixels and applies
+`depth_l1_loss` in disparity space, multiplied by `scene_scale` (67.6 for this metric
+block). At p180 cam0 the sparse points give 1,679 in-image depths, median 3.43 m. A 10%
+depth error near 3.4 m gives a disparity term of about 1.83 before the weight; at
+`depth_lambda 0.005` that is about 0.009 against a photometric loss around 0.2. The job
+uses 0.005, half the upstream default, so sparse depth constrains the near surface without
+dominating RGB.
+
+### Memory, time and cap
+
+The factor-4 runs logged `torch.cuda.max_memory_allocated()` of 0.88 GB at 30k
+(`train_step29999_rank0.json`), not 88% of the L4. Factor 2 has about 4x the pixels per
+image; even a 4x increase is under 4 GB on a 24 GB L4. No splat cap is set; monitor the
+first checkpoint.
+
+The factor-4 training loop was 1,041 s (17.4 min) for 30k. Factor 2 is expected to take
+roughly 4x the rasterisation work, with depth loading and path prunes on top: estimate
+60-90 min. The env sets `TRAIN_TIMEOUT_MIN=150`, `MAX_MINUTES=200`, one 30k variant.
+That leaves headroom for a slow factor-2 run while preserving checkpoints/results on
+timeout.
