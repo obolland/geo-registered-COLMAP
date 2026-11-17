@@ -137,6 +137,57 @@ log "prepare examples and explicit held-out split"
 rm -rf "$WORK/examples"
 cp -a "$ROOT/gsplat/examples" "$WORK/examples"
 chown -R "$OWNER:$OWNER" "$WORK/examples"
+
+# The default strategy stops _prune_gs at refine_stop_iter. Patch the copied example with a subclass that
+# keeps the prune-only pass running afterwards (no growth, no opacity reset). This is Python in $WORK only;
+# the installed gsplat package and its compiled CUDA extension are untouched.
+cat >"$WORK/patch-strategy.py" <<'PATCH'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+strategy_old = '''@dataclass
+class Config:'''
+strategy_new = '''class PruneAfterRefineStrategy(DefaultStrategy):
+    """Keep pruning after refinement, without growing splats.
+
+    The stock strategy returns from step_post_backward at refine_stop_iter, which stops
+    _prune_gs as well. This subclass keeps the prune pass running every refine_every.
+    Opacity reset is deliberately not continued: it exists to support further
+    densification, and with no growth it only creates a transient dip and can leave the
+    final model under-opaque.
+    """
+
+    def step_post_backward(self, params, optimizers, state, step, info, packed=False, scene=None):
+        if step < self.refine_stop_iter:
+            return super().step_post_backward(
+                params, optimizers, state, step, info, packed=packed, scene=scene
+            )
+        if step % self.refine_every == 0:
+            n_prune = self._prune_gs(params, optimizers, state, step, scene=scene)
+            if self.verbose:
+                print(
+                    f"Step {step}: {n_prune} GSs pruned after refinement. "
+                    f"Now having {len(params['means'])} GSs."
+                )
+
+
+@dataclass
+class Config:'''
+if text.count(strategy_old) != 1:
+    raise SystemExit(f'strategy class anchor found {text.count(strategy_old)} times, expected 1')
+text = text.replace(strategy_old, strategy_new)
+use_old = 'strategy=DefaultStrategy(verbose=True),'
+use_new = 'strategy=PruneAfterRefineStrategy(verbose=True),'
+if text.count(use_old) != 1:
+    raise SystemExit(f'default strategy use found {text.count(use_old)} times, expected 1')
+path.write_text(text.replace(use_old, use_new))
+print('prune-after-refine strategy patched')
+PATCH
+chown "$OWNER:$OWNER" "$WORK/patch-strategy.py"
+as_owner "python $WORK/patch-strategy.py $WORK/examples/simple_trainer.py"
+
 as_owner "python - <<'PY'
 from pathlib import Path
 path = Path('$WORK/examples/datasets/colmap.py')
@@ -191,11 +242,16 @@ PY"
 
 as_owner "cd $WORK/examples && python - <<'PY'
 import simple_trainer
-print('example imports ok')
+from gsplat.strategy import DefaultStrategy
+strategy = simple_trainer.PruneAfterRefineStrategy(verbose=True)
+assert isinstance(strategy, DefaultStrategy)
+print('example imports ok; prune-after-refine strategy present')
 PY"
+as_owner "cd $WORK/examples && python simple_trainer.py default --help >/dev/null"
 
 # Training variants, one per line as "name|subcommand|extra arguments". The default is the pilot itself; a
-# diagnostic session passes several short variants (MAX_STEPS) to compare settings on the same block.
+# diagnostic session passes several short variants (MAX_STEPS) to compare settings on the same block. The
+# prune-after-refine patch applies to the "default" subcommand; the mcmc preset uses a different strategy.
 VARIANTS=${VARIANTS:-"pilot|mcmc|--strategy.cap-max 1000000"}
 MAX_STEPS=${MAX_STEPS:-30000}
 [[ $MAX_STEPS =~ ^[0-9]+$ ]] || { echo "MAX_STEPS must be an integer, got $MAX_STEPS" >&2; exit 2; }
