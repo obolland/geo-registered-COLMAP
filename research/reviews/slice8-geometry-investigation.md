@@ -529,3 +529,6 @@ Implications:
 - The prepared prune-after-refine fix removes the post-15k 3D-scale tail, but it does not
   remove the small-scale near-camera shell. Pair it with a near-camera rule or the shell
   will remain.
+
+## Pruned retrain (main session, 2026-11-17 20:45-21:11, about 27 billed minutes)
+Default strategy, metric frame, prune-after-refine plus near-camera prune at 0.7 m (Olly approved; 0.7 m chosen over 1.0 m so near hedges survive). Held-out 17.7 / 19.6 / 20.4 PSNR at 10k / 20k / 30k (SSIM 0.597 / 0.627 / 0.647, LPIPS 0.709 / 0.645 / 0.610), 312k splats. Pulses 180-210: median 11.1 dB (min 3.5) against 7.9 unpruned; elsewhere unchanged at 22.6. Partial recovery only: something still occludes or fails there. PLY: ~/fieldtest2/splat/pilot/s160-l100-metric-pruned-30k.ply; results s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T204542Z/.
