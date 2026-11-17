@@ -79,7 +79,7 @@ log "checking training dependencies"
 if ! as_owner 'python - <<"PY"
 import importlib.util, sys
 modules = ["torch", "torchvision", "gsplat", "pycolmap", "cv2", "tyro", "torchmetrics",
-           "nerfview", "viser", "sklearn", "tensorboard", "imageio", "PIL", "yaml", "matplotlib"]
+           "nerfview", "splines", "viser", "sklearn", "tensorboard", "imageio", "PIL", "yaml", "matplotlib"]
 missing = [name for name in modules if importlib.util.find_spec(name) is None]
 print("missing:", missing)
 sys.exit(1 if missing else 0)
@@ -88,10 +88,13 @@ PY'; then
     # torch is already installed at 2.9.1 by setup-gpu.sh and is pinned so the wheel cannot change.
     # nvidia-ncore, ppisp, fused-bilagrid and fused-ssim are deliberately not installed: this pilot uses
     # COLMAP data, no post-processing, and gsplat falls back to its reference SSIM when fused-ssim is absent.
+    # Versions resolved and import-tested together locally on 2026-11-17 (simple_trainer imports cleanly;
+    # nerfview needs splines, which it does not declare: the first pilot run failed on it).
     as_owner 'pip install -q "torch==2.9.1" "torchvision==0.24.1" "pycolmap==4.2.1" \
-        "numpy>=2,<3" scipy scikit-learn tqdm "torchmetrics==1.8.2" \
-        "tyro>=0.8.8,!=1.0.9,!=1.0.10" viser "imageio[ffmpeg]" opencv-python-headless \
-        Pillow piexif tensorboard pyyaml matplotlib \
+        "numpy>=2,<3" "scipy==1.18.1" "scikit-learn==1.9.1" "tqdm==4.70.1" "torchmetrics==1.8.2" \
+        "tyro==1.0.17" "viser==1.1.1" "imageio[ffmpeg]==2.38.2" "opencv-python-headless==5.0.0.93" \
+        "Pillow==13.0.0" "piexif==1.1.3" "tensorboard==2.21.0" "pyyaml==6.0.3" "matplotlib==3.11.2" \
+        "splines==0.3.3" \
         "nerfview @ git+https://github.com/nerfstudio-project/nerfview@4538024fe0d15fd1a0e4d760f3695fc44ca72787"'
     as_owner 'pip check'
 fi
