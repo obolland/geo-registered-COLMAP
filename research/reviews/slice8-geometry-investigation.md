@@ -217,6 +217,25 @@ p180 cam0 (remove everything within 1 m of any camera) raises its PSNR from 7.8 
 post-hoc cull cannot recover it. The condition for adding `georoute splat-cull` is not
 met.
 
+## Near-camera prune sanity check (2026-11-17, post-hoc)
+
+This is a post-hoc cull of the existing checkpoint, not the training-time prune now
+prepared in `ops/aws/train-pilot.sh`. It removes splats whose centres are within a
+distance of any training camera centre. All 72 held-out views, half training resolution:
+
+| threshold | removed | all PSNR/SSIM | failing 16 PSNR/SSIM | rest 56 PSNR/SSIM |
+|---|---:|---|---|---|
+| no removal | 0 | 19.14 / 0.616 | 8.33 / 0.402 | 22.23 / 0.677 |
+| 0.25 m | 1,681 | 19.05 / 0.615 | 8.29 / 0.400 | 22.12 / 0.676 |
+| 0.50 m | 6,908 | 18.95 / 0.614 | 7.97 / 0.396 | 22.09 / 0.677 |
+| 1.00 m | 17,613 | 18.24 / 0.616 | 6.95 / 0.422 | 21.47 / 0.672 |
+
+The 1.0 m centre cull is too aggressive: it lowers both the failing and the rest means.
+0.5 m is also slightly negative, and 0.25 m is neutral. The result does not mean the
+training-time prune will fail, because it prevents the shell from forming instead of
+removing established splats, but it is a warning against assuming that a broad 1.0 m
+cull is free. The threshold should be reviewed after the first pruned run.
+
 ## Durable training fix (prepared, not run)
 
 Commit `7bd2923` adds a Python-only patch to the copied examples in
