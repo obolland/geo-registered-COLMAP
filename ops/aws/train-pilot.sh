@@ -3,7 +3,7 @@
 # ops/aws/grab-and-run.sh / ops/aws/run-on-gpu.sh. It is written, not run here.
 #
 # The block is pulled from s3://$BUCKET/blocks/$BLOCK/, trained with gsplat's MCMC preset
-# (cap_max 1,000,000, 30k steps, SH 3, antialiased, data factor 4), and every result is
+# (cap_max 1,000,000, 30k steps, SH 3, antialiased, data factor from DATA_FACTOR), and every result is
 # uploaded under s3://$BUCKET/pilot/$BLOCK/$RUN_ID/ even if training or evaluation fails.
 # Checkpoints and PLY files are written every 5k steps so a cap or a late failure does not
 # lose the run. The hard external cap is 240 minutes; training gets 195 minutes and the rest
@@ -13,6 +13,8 @@ set -euo pipefail
 BUCKET=${BUCKET:-georoute-splat-data-086341361260}
 BLOCK=${BLOCK:-s160-l100}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+DATA_FACTOR=${DATA_FACTOR:-4}
+IMAGE_DIR=images_${DATA_FACTOR}
 S3_BLOCK=${S3_BLOCK:-blocks/$BLOCK}
 S3_RESULTS=s3://$BUCKET/pilot/$BLOCK/$RUN_ID
 ROOT=/opt/georoute
@@ -69,12 +71,15 @@ mkdir -p "$WORK" "$DATA" "$RUN_DIR" "$RESULTS"
 cat >"$RESULTS/near-prune.json" <<JSON
 {
   "near_prune_m": $NEAR_PRUNE_M,
-  "distance": "camera-centre",
-  "camera_scope": "train",
+  "distance": "path-ellipsoid",
+  "body": "centre-to-polyline minus max-3d-scale",
+  "opacity_min": 0.5,
+  "camera_scope": "train-path",
+  "max_segment_m": 2.0,
   "applies_to": "default subcommand"
 }
 JSON
-log "near-camera prune: $NEAR_PRUNE_M m from training camera centres (centre distance)"
+log "near-camera path prune: $NEAR_PRUNE_M m ellipsoid body to the training camera path"
 df -Pk "$WORK" | tail -n 1
 free_kb=$(df -Pk "$WORK" | awk 'NR==2 {print $4}')
 ((free_kb > 15 * 1024 * 1024)) || { echo "less than 15 GB free under $WORK" >&2; exit 1; }
@@ -83,7 +88,7 @@ log "pull block $S3_BLOCK"
 aws s3 sync "s3://$BUCKET/$S3_BLOCK/" "$DATA/" --delete --only-show-errors
 [[ -f $DATA/manifest.json ]] || { echo "block manifest missing in $DATA" >&2; exit 1; }
 [[ -f $DATA/heldout.json ]] || { echo "heldout.json missing in $DATA" >&2; exit 1; }
-[[ -d $DATA/images_4 ]] || { echo "images_4 missing in $DATA" >&2; exit 1; }
+[[ -d $DATA/$IMAGE_DIR ]] || { echo "$IMAGE_DIR missing in $DATA" >&2; exit 1; }
 [[ -d $DATA/sparse/0 ]] || { echo "sparse/0 missing in $DATA" >&2; exit 1; }
 chown -R "$OWNER:$OWNER" "$WORK"
 
@@ -142,7 +147,7 @@ assert heldout, 'heldout.json is empty'
 assert train, 'train.json is empty'
 assert not (set(heldout) & set(train)), 'train and held-out overlap'
 assert set(heldout) | set(train) == names, 'split does not match the sparse model'
-assert all((data / 'images_4' / Path(name).with_suffix('.png')).is_file() for name in train + heldout)
+assert all((data / '$IMAGE_DIR' / Path(name).with_suffix('.png')).is_file() for name in train + heldout)
 assert {camera.model.name for camera in model.cameras.values()} == {'PINHOLE'}
 print('block ok:', len(train), 'train,', len(heldout), 'held-out,', len(model.points3D), 'points')
 PY"
@@ -176,51 +181,63 @@ class PruneAfterRefineStrategy(DefaultStrategy):
     densification, and with no growth it only creates a transient dip and can leave the
     final model under-opaque.
 
-    It also prunes splats whose centres are within near_prune_m metres of any training
-    camera centre, every refine_every steps before and after refine_stop_iter. The
-    threshold is expressed in the original world units; configure_near_prune converts it
-    to the parser frame by multiplying by the parser transform scale, so it is correct
-    with or without normalise_world_space.
+    It also prunes opaque splats whose ellipsoid body reaches within near_prune_m of the
+    continuous training-camera path, every refine_every steps before and after
+    refine_stop_iter. The path is supplied as line segments joining consecutive training
+    cameras in each camera stream; segments longer than 2 m are not bridged, so the two
+    selected stretches of a block are not joined through empty space. The threshold is in
+    original world units; configure_near_prune scales it by the parser transform, so it
+    works with or without normalise_world_space.
 
-    Centre distance is used rather than ellipsoid extent. The failure shell is centred
-    0.1-0.5 m from the cameras, so centre distance removes it. A bounding-sphere test
-    (centre distance minus the largest scale) would also remove large splats several
-    metres away, including useful foreground, and the earlier 0.5 m cull test showed
-    that a broad near cull can lower a view's PSNR. The extent test is therefore left out
-    until a retrain shows it is needed.
+    The body test is centre distance to the polyline minus the largest 3D scale. The 0.7 m
+    centre-only retrain left screen-covering splats just outside the radius, with centres
+    0.7-2 m away and scales 1-3 m, and held-out cameras were unprotected. The ellipsoid
+    path test catches both classes. The extent is a bounding sphere, so it is conservative
+    along the largest axis; this is deliberate for a floater-removal rule.
     """
 
     near_prune_m: float = 1.0
-    _near_prune_cameras: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
+    _near_prune_segments: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
     _near_prune_world_scale: float = field(default=1.0, init=False, repr=False, compare=False)
 
-    def configure_near_prune(self, camera_centres, world_scale: float):
-        centres = torch.as_tensor(np.asarray(camera_centres), dtype=torch.float32)
-        if centres.ndim != 2 or centres.shape[1] != 3 or len(centres) == 0:
-            raise ValueError(f'near-prune camera centres must be Nx3, got {tuple(centres.shape)}')
+    def configure_near_prune(self, path_segments, world_scale: float):
+        segments = torch.as_tensor(np.asarray(path_segments), dtype=torch.float32)
+        if segments.ndim != 3 or segments.shape[1:] != (2, 3) or len(segments) == 0:
+            raise ValueError(f'near-prune path segments must be Nx2x3, got {tuple(segments.shape)}')
         scale = float(world_scale)
         if not math.isfinite(scale) or scale <= 0.0:
             raise ValueError(f'near-prune world scale must be positive, got {scale}')
-        self._near_prune_cameras = centres
+        self._near_prune_segments = segments
         self._near_prune_world_scale = scale
+        length = float(torch.linalg.vector_norm(segments[:, 1] - segments[:, 0], dim=1).sum())
         print(
-            f'Near-camera prune: {len(centres)} training cameras, '
+            f'Near-camera path prune: {len(segments)} segments, {length:.1f} parser units, '
             f'{self.near_prune_m:.3f} m original, world scale {scale:.6f}, '
             f'effective threshold {self.near_prune_m * scale:.6f}'
         )
 
     @torch.no_grad()
     def _near_prune_mask(self, params):
-        if self._near_prune_cameras is None:
-            raise RuntimeError('near-camera prune was not configured before training')
+        if self._near_prune_segments is None:
+            raise RuntimeError('near-camera path prune was not configured before training')
         means = params['means']
-        cameras = self._near_prune_cameras.to(device=means.device, dtype=means.dtype)
+        scales = torch.exp(params['scales']).max(dim=-1).values
+        opacities = torch.sigmoid(params['opacities'].flatten())
+        segments = self._near_prune_segments.to(device=means.device, dtype=means.dtype)
+        starts = segments[:, 0]
+        directions = segments[:, 1] - starts
+        lengths2 = (directions * directions).sum(dim=1).clamp_min(1e-12)
         threshold = float(self.near_prune_m) * float(self._near_prune_world_scale)
         mask = torch.zeros(len(means), device=means.device, dtype=torch.bool)
-        for start in range(0, len(means), 8192):
-            chunk = means[start : start + 8192]
-            distance = torch.cdist(chunk, cameras).amin(dim=1)
-            mask[start : start + len(chunk)] = distance <= threshold
+        for start in range(0, len(means), 4096):
+            chunk = means[start : start + 4096]
+            delta = chunk[:, None, :] - starts[None, :, :]
+            t = ((delta * directions[None, :, :]).sum(dim=2) / lengths2[None, :]).clamp(0.0, 1.0)
+            closest = starts[None, :, :] + t[:, :, None] * directions[None, :, :]
+            distance = torch.linalg.vector_norm(chunk[:, None, :] - closest, dim=2).amin(dim=1)
+            mask[start : start + len(chunk)] = (
+                (distance - scales[start : start + len(chunk)]) <= threshold
+            ) & (opacities[start : start + len(chunk)] > 0.5)
         return mask
 
     def step_post_backward(self, params, optimizers, state, step, info, packed=False, scene=None):
@@ -246,7 +263,7 @@ class PruneAfterRefineStrategy(DefaultStrategy):
                 print(
                     f'Step {step}: {n_near} GSs pruned within '
                     f'{self.near_prune_m * self._near_prune_world_scale:.3f} parser units '
-                    f'of a training camera. Now having {len(params["means"])} GSs.'
+                    f'of the training camera path. Now having {len(params["means"])} GSs.'
                 )
 
 
@@ -268,9 +285,21 @@ runner_new = '''        self.scene_scale = self.parser.scene_scale * 1.1 * cfg.g
             if not hasattr(self.parser, "camtoworlds") or not hasattr(self.parser, "transform"):
                 raise ValueError("near-camera pruning requires a COLMAP parser")
             train_indices = np.asarray(self.trainset.indices, dtype=int)
-            camera_centres = self.parser.camtoworlds[train_indices][:, :3, 3]
             world_scale = float(np.cbrt(abs(np.linalg.det(self.parser.transform[:3, :3]))))
-            self.cfg.strategy.configure_near_prune(camera_centres, world_scale)'''
+            groups = {}
+            for index in train_indices:
+                name = self.parser.image_names[int(index)]
+                groups.setdefault(name.split("/")[0], []).append((name, int(index)))
+            segments = []
+            for camera, items in sorted(groups.items()):
+                items.sort()
+                centres = self.parser.camtoworlds[[index for _, index in items]][:, :3, 3]
+                for a, b in zip(centres, centres[1:]):
+                    if np.linalg.norm(b - a) <= 2.0 * world_scale:
+                        segments.append([a, b])
+            if not segments:
+                raise ValueError("near-camera pruning found no contiguous training-camera path")
+            self.cfg.strategy.configure_near_prune(np.asarray(segments), world_scale)'''
 if text.count(runner_old) != 1:
     raise SystemExit(f'runner scene-scale anchor found {text.count(runner_old)} times, expected 1')
 text = text.replace(runner_old, runner_new)
@@ -379,7 +408,7 @@ cd $WORK/examples
 timeout --signal=TERM --kill-after=2m "${per_variant_min}m" python simple_trainer.py $subcommand \
     --data_dir $DATA \
     --result_dir $RESULTS/$name \
-    --data_factor 4 \
+    --data_factor $DATA_FACTOR \
     --max_steps $MAX_STEPS \
     --save_ply \
     --disable_viewer \
