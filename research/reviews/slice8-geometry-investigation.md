@@ -164,34 +164,77 @@ and near-camera splats, which are exactly the occluders.
 
 ### Cheapest confirmation, no retraining
 
-Load the existing `ckpt_29999_rank0.pt`, remove:
-
-```python
-giant = exp(scales).max(dim=-1).values > 6.758
-near = (distance_to_nearest_camera < 1.5) & (exp(scales).max(dim=-1).values > 0.5) & (sigmoid(opacities) > 0.5)
-mask = giant | near
-```
-
-This removes 1,164 of 313,256 splats (0.37%): 72 giants and 1,092 near-camera large
-splats, no overlap. Re-render the 72 held-out views from the filtered checkpoint with
-the metric config and no training. Also run the two filters separately, so the effect of
-the far giants and the near blobs can be attributed. The eval is about one second of GPU
-render work plus checkpoint and scene setup; the paid cost is dominated by starting the
-instance, not by the eval. This still needs Olly's approval because it starts the GPU.
-
-If the 16 failing views recover and the overall held-out PSNR rises, the diagnosis is
-confirmed and the filtered PLY can be used for the pilot.
+The proposed filter was tested on CPU, without a GPU session. It removes 1,164 of
+313,256 splats (0.37%): 72 giants and 1,092 near-camera large splats, no overlap. The
+result is below: it does not recover the failing views. No `splat-cull` tool was added.
 
 ### Training fix
 
 The durable fix is to keep pruning active after refinement stops. Preferred small change:
 after `refine_stop_iter`, call `_prune_gs` every `refine_every` steps without calling
-`_grow_gs`, and keep the opacity reset. That removes over-scale and transparent splats
-without restarting densification or growing the splat count. Setting
-`refine_stop_iter = 30000` is a simpler config-only test, but it also resumes
-densification and may increase memory and splat count, so it is the second choice.
+`_grow_gs`. Do not continue the opacity reset: it exists to support densification, and
+with no growth it only creates a transient dip and can leave the final model
+under-opaque. Setting `refine_stop_iter = 30000` is a simpler config-only test, but it
+also resumes densification and may increase memory and splat count, so it is the second
+choice.
 
-A post-training cull with the same thresholds should be kept regardless, because it is
-cheap, observable and protects the export. Raising `near_plane` is not a suitable fix:
-it would clip legitimate road and wall geometry at 1-2 m and would not remove the far
-white giants.
+Raising `near_plane` is not a suitable fix: it would clip legitimate road and wall
+geometry at 1-2 m and would not remove the far white giants.
+
+## CPU cull test (2026-11-17)
+
+The cull was tested without a GPU. The local renderer reproduces the gsplat metric
+renders: at half training resolution (675 x 442; camera sizes vary by a few pixels),
+the unfiltered CPU render is 36.2 dB median PSNR against the GPU right half, 19.0 dB
+minimum, with the failing black and white views matching at 28.6-99 dB. Against the
+ground truth, CPU unfiltered scores 19.14 PSNR and 0.616 SSIM, against the GPU run's
+19.4 and 0.615; failing views 8.33 against 8.37, the rest 22.23 against 22.55. The
+comparison is therefore trustworthy.
+
+Rendering all 72 held-out views for each filter (half training resolution). The filters
+are: giant, max 3D scale above 6.758 m; near, distance below 1.5 m to any block camera
+centre with max scale above 0.5 m and opacity above 0.5; both is the union.
+
+| filter | removed | all PSNR/SSIM | failing 16 PSNR/SSIM | rest 56 PSNR/SSIM |
+|---|---:|---|---|---|
+| unfiltered | 0 | 19.14 / 0.616 | 8.33 / 0.402 | 22.23 / 0.677 |
+| giant only | 72 | 19.08 / 0.615 | 8.35 / 0.402 | 22.15 / 0.676 |
+| near only | 1,092 | 19.43 / 0.625 | 10.60 / 0.449 | 21.95 / 0.675 |
+| both | 1,164 | 19.37 / 0.624 | 10.61 / 0.449 | 21.87 / 0.674 |
+
+The giant-only cull changes nothing: p190 cam3 remains an exactly white render and
+p180 cam0 remains black; the failing mean stays at 8.35 dB. Removing the near-camera
+splats raises the failing mean from 8.33 to 10.60 dB and the failing SSIM from 0.402 to
+0.449, but it lowers the rest from 22.23 to 21.95 dB, and the failing views are still
+8-20 dB, far from the 22 dB of the rest. The combined cull is identical on the failing
+views (10.61 dB) and lowers the rest further to 21.87 dB. The near cull changes some
+views from white to grey blur without recovering their PSNR; p180 cam0 stays black at
+7.6 dB and p190 cam3 stays exactly white at 3.6 dB. A stronger distance-only cull on
+p180 cam0 (remove everything within 1 m of any camera) raises its PSNR from 7.8 to
+12.0 dB; within 2 m it becomes a blur at 7.5 dB. The scene behind the near shell is not a correct reconstruction, so a
+post-hoc cull cannot recover it. The condition for adding `georoute splat-cull` is not
+met.
+
+## Durable training fix (prepared, not run)
+
+Commit `7bd2923` adds a Python-only patch to the copied examples in
+`ops/aws/train-pilot.sh`. It defines `PruneAfterRefineStrategy(DefaultStrategy)` and
+uses it for the `default` preset. Before `refine_stop_iter` it calls the stock
+implementation; afterwards it calls `_prune_gs` every `refine_every` steps without
+calling `_grow_gs`. Opacity reset is deliberately not continued: reset exists to
+support densification, and with no growth it can only create a transient dip and can
+leave the final model under-opaque if the run ends on a reset boundary.
+
+The patch was applied to the exact pinned source and checked locally: the file
+compiles, `import simple_trainer` loads, `PruneAfterRefineStrategy` is a
+`DefaultStrategy`, a synthetic prune step removes the over-scale and transparent
+splats and slices the strategy state, and `python simple_trainer.py default --help`
+parses successfully. The patch is in `$WORK/examples/simple_trainer.py`; it does not
+touch the installed gsplat package or the compiled CUDA extension, so no JIT rebuild is
+triggered. The `mcmc` preset is unchanged, so the patch applies only when the job is
+run with the `default` subcommand.
+
+This fix removes the post-15k 3D-scale tail. It does not remove the small 3D-scale,
+near-camera shell, because `_prune_gs` has no camera-distance or screen-size rule
+enabled by default. If the next run still fails at 180-210, the next lever is a
+near-camera or screen-size prune during training, not a larger post-hoc cull.
