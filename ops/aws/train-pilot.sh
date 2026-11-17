@@ -194,33 +194,52 @@ import simple_trainer
 print('example imports ok')
 PY"
 
-cat >"$WORK/run-train.sh" <<TRAIN
+# Training variants, one per line as "name|subcommand|extra arguments". The default is the pilot itself; a
+# diagnostic session passes several short variants (MAX_STEPS) to compare settings on the same block.
+VARIANTS=${VARIANTS:-"pilot|mcmc|--strategy.cap-max 1000000"}
+MAX_STEPS=${MAX_STEPS:-30000}
+[[ $MAX_STEPS =~ ^[0-9]+$ ]] || { echo "MAX_STEPS must be an integer, got $MAX_STEPS" >&2; exit 2; }
+step_args=""
+if ((MAX_STEPS < 30000)); then
+    step_args="--eval_steps $MAX_STEPS --save_steps $MAX_STEPS --ply_steps $MAX_STEPS"
+fi
+variant_count=$(grep -c . <<<"$VARIANTS")
+per_variant_min=$((TRAIN_TIMEOUT_MIN / variant_count))
+chown -R "$OWNER:$OWNER" "$WORK"
+train_status=0
+while IFS='|' read -r name subcommand extra; do
+    [[ -n $name ]] || continue
+    [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || { echo "variant name must be plain, got $name" >&2; exit 2; }
+    cat >"$WORK/run-$name.sh" <<TRAIN
 #!/usr/bin/env bash
 set -euo pipefail
 source /opt/georoute/env.sh
 cd $WORK/examples
-timeout --signal=TERM --kill-after=2m "${TRAIN_TIMEOUT_MIN}m" python simple_trainer.py mcmc \
+timeout --signal=TERM --kill-after=2m "${per_variant_min}m" python simple_trainer.py $subcommand \
     --data_dir $DATA \
-    --result_dir $RESULTS \
+    --result_dir $RESULTS/$name \
     --data_factor 4 \
-    --max_steps 30000 \
+    --max_steps $MAX_STEPS \
     --save_ply \
     --disable_viewer \
     --disable_video \
     --antialiased \
     --sh_degree 3 \
-    --strategy.cap-max 1000000
+    $step_args $extra
 TRAIN
-chmod +x "$WORK/run-train.sh"
-chown -R "$OWNER:$OWNER" "$WORK"
-
-log "training (timeout ${TRAIN_TIMEOUT_MIN} min)"
-set +e
-sudo -H -u "$OWNER" bash "$WORK/run-train.sh" 2>&1 | tee "$LOG"
-train_status=${PIPESTATUS[0]}
-set -e
-log "training finished with status $train_status"
+    chown "$OWNER:$OWNER" "$WORK/run-$name.sh"
+    log "training variant $name: $subcommand $extra ($MAX_STEPS steps, timeout ${per_variant_min} min)"
+    set +e
+    sudo -H -u "$OWNER" bash "$WORK/run-$name.sh" 2>&1 | tee -a "$LOG"
+    status=${PIPESTATUS[0]}
+    set -e
+    log "variant $name finished with status $status"
+    for stats in "$RESULTS/$name"/stats/val_step*.json; do
+        [[ -f $stats ]] && echo "$name $(basename "$stats"): $(cat "$stats")"
+    done
+    ((status == 0)) || train_status=$status
+done <<<"$VARIANTS"
 
 # The EXIT trap uploads checkpoints, stats, renders and logs on every path. A nonzero status here means a
-# failed or capped run, but the artifacts that exist are still preserved for diagnosis.
+# failed or capped variant, but the artifacts that exist are still preserved for diagnosis.
 exit "$train_status"
