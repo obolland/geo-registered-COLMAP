@@ -1,0 +1,84 @@
+=== inventory (18:53:41)
+/home/ubuntu/keyframes
+/home/ubuntu/keyframes/colmap
+/home/ubuntu/keyframes/colmap/sparse
+/home/ubuntu/keyframes/colmap/.DS_Store
+/home/ubuntu/keyframes/database.db
+/home/ubuntu/keyframes/.DS_Store
+/home/ubuntu/keyframes/images
+/home/ubuntu/keyframes/images/IMG_5525.jpg
+/home/ubuntu/keyframes/images/IMG_5528.jpg
+/home/ubuntu/keyframes/images/IMG_5538.jpg
+/home/ubuntu/keyframes/images/IMG_5524.jpg
+/home/ubuntu/keyframes/images/IMG_5541.jpg
+/home/ubuntu/keyframes/images/IMG_5562.jpg
+/home/ubuntu/keyframes/images/IMG_5519.jpg
+/home/ubuntu/keyframes/images/IMG_5571.jpg
+/home/ubuntu/keyframes/images/IMG_5577.jpg
+/home/ubuntu/keyframes/images/IMG_5546.jpg
+/home/ubuntu/keyframes/images/IMG_5520.jpg
+/home/ubuntu/keyframes/images/IMG_5580.jpg
+/home/ubuntu/keyframes/images/IMG_5583.jpg
+      4 DS_Store
+      5 bin
+      1 db
+     82 jpg
+/home/ubuntu/outputs
+/home/ubuntu/outputs/unnamed
+/home/ubuntu/outputs/unnamed/splatfacto
+/home/ubuntu/outputs/unnamed/splatfacto/2025-12-29_214858
+/home/ubuntu/outputs/unnamed/splatfacto/2025-12-29_214858/nerfstudio_models
+/home/ubuntu/outputs/unnamed/splatfacto/2025-12-29_214858/dataparser_transforms.json
+/home/ubuntu/outputs/unnamed/splatfacto/2025-12-29_214858/config.yml
+/home/ubuntu/exports
+/home/ubuntu/exports/splat
+/home/ubuntu/exports/splat/splat.ply
+=== copy keyframes and COLMAP model (18:53:41)
+=== copy training configs and export metadata, not the large outputs (18:53:44)
+total 148704
+drwxrwxr-x 2 ubuntu ubuntu      4096 Dec 29  2025 .
+drwxrwxr-x 3 ubuntu ubuntu      4096 Dec 29  2025 ..
+-rw-rw-r-- 1 ubuntu ubuntu 152261689 Dec 29  2025 splat.ply
+=== shell history lines mentioning the pipeline
+cd colmap
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-12-05_171619/config.yml --output-dir exports/splat/
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-12-05_171619/config.yml --output-dir exports/splat/
+ns-train splatfacto   --data "/keyframes"   --data.parser colmap
+ns-train splatfacto colmap   --data "/keyframes"
+ns-train splatfacto colmap   --data "./keyframes"
+sudo mkdir -p /keyframes/colmap
+sudo mv /keyframes/sparse /keyframes/colmap/
+sudo mkdir -p ./keyframes/colmap
+sudo mv ./keyframes/sparse ./keyframes/colmap/
+cd colmap
+ns-train splatfacto colmap   --data "./keyframes"
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-12-05_171619/config.yml --output-dir exports/splat/
+cd splatfacto
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-12-05_171619/config.yml --output-dir exports/splat/
+cd splatfacto
+ls ~/outputs/unnamed/splatfacto/2025-12-08_143801/nerfstudio_models
+ns-export gaussian-splat   --load-config ~/outputs/unnamed/splatfacto/2025-12-08_143801/config.yml   --output-dir ~/exports/splat
+ns-export gaussian-splat   --load-config ~/outputs/unnamed/splatfacto/2025-12-08_143801/config.yml   --output-dir ~/exports/splat
+ns-train splatfacto colmap   --data /keyframes   --orientation_method none   --center_method none   --auto_scale_poses False
+cd keyframes/colmap
+ns-train splatfacto colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False
+ns-train splatfacto colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False   --downscale_factor 1
+ns-train splatfacto colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False   --downscale_factor 2
+ns-train splatfacto colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False   --downscale_factor 2 --trainer.max_num_iterations 10000
+ns-train splatfacto colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False   --downscale_factor 2 --max-num-iterations 10000
+ns-train splatfacto   --max-num-iterations 10000   colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False   --downscale_factor 2
+ns-export gaussian-splat --load-config ./outputs/unnamed/splatfacto/2025-12-08_204920/config.yml --output-dir ./exports/splat/
+ns-train splatfacto colmap --data keyframes
+ns-train splatfacto colmap   --data keyframes   --max-num-iterations 10000
+ns-train splatfacto colmap   --data ./keyframes   --max-num-iterations 10000
+ns-train splatfacto   --max-num-iterations 10000   colmap   --data ./keyframes
+ns-train splatfacto colmap --data ./keyframes
+ns-train splatfacto colmap --data ./keyframes --downscale_factor 1
+ns-train splatfacto colmap --data ./keyframes --downscale_factor 1
+ns-train splatfacto colmap   --data ./keyframes --downscale_factor 1
+ns-train splatfacto colmap   --data ./keyframes --downscale_factor 1
+ns-export gaussian-splat --load-config ./outputs/unnamed/splatfacto/2025-12-08_223224/config.yml --output-dir ./exports/splat_2/ 
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-12-29_214858/config.yml --output-dir exports/splat/
+ns-train splatfacto colmap   --data ./keyframes   --orientation_method none   --center_method none   --auto_scale_poses False   --downscale_factor 1
+copy finished 2026-11-17T18:53:46Z
+

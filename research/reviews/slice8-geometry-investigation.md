@@ -238,3 +238,53 @@ This fix removes the post-15k 3D-scale tail. It does not remove the small 3D-sca
 near-camera shell, because `_prune_gs` has no camera-distance or screen-size rule
 enabled by default. If the next run still fails at 180-210, the next lever is a
 near-camera or screen-size prune during training, not a larger post-hoc cull.
+
+## Training fit and scene support (2026-11-17)
+
+The same CPU renderer, metric checkpoint 29,999, half resolution. Training views
+selected from `train.json`: pulses 171-219 and 281-309, all four cameras. 284 views
+were available. TRAIN_TABLE_PLACEHOLDER
+
+Sparse support in the held-out failing and working views:
+
+| measure | failing 180-210 | working 280-310 |
+|---|---:|---:|
+| sparse points projecting into view, median depth | 55.0 m | 24.3 m |
+| share of projected points within 2 m | 0.05% | 0.15% |
+| points actually observed by the image, median depth | 13.3 m | 6.2 m |
+| share of observed points within 2 m | 0.3% | 0.0% |
+| share of observed points within 5 m | 18.5% | 37.8% |
+| nearest same-camera training view baseline | 0.797 m | 0.790 m |
+| angle at a point 1.5 m away | 29.8 deg | 29.5 deg |
+| angle at the per-view median projected depth | 0.94 deg | 3.0 deg |
+| angle at the per-view median observed depth | 5.1 deg | 6.9 deg |
+
+The close foreground seen in the photographs is not well represented by the sparse
+points. The failing stretch's projected and observed depths are farther than the
+working stretch, and its share of observed points within 5 m is about half. At 1.5 m
+the 0.8 m baseline subtends about 30 degrees, which is a lot of parallax, not too
+little; the problem is that the sparse points near that depth are scarce.
+
+Ground-truth images inspected at the full `images_4` resolution:
+
+- p180 cam0 (`IMG_4042`) is a close dry-stone wall with a green wooden door,
+  a low stone wall on the right, a grass strip, and overcast sky at the top. The wall
+  fills almost the whole frame; there is no rider, bike or vehicle, and no visible motion
+  blur or exposure problem.
+- p190 cam3 (`IMG_8586`) is a foreground grass bank and hedge filling the lower half,
+  with a stone house, wall, blue door and trees behind, and overcast sky. No rider, bike
+  or vehicle, and no obvious blur.
+- p200 cam1 (`IMG_8542`) is an open junction: tarmac, white cottages, a hedge, a bare tree
+  and sky. It is not a close-wall view at all.
+- Working p300 cam0 (`IMG_4162`) is a close white plaster wall, window and ivy; p300 cam3
+  (`IMG_8696`) is a close ivy hedge and road edge. Both are close and high-frequency, and
+  the model renders them far better than the failing stretch.
+
+There is no single content type that explains the failure: it includes close stone,
+close vegetation and an open junction, and the working stretch also contains close
+vegetation. The failing images are all sharp and normally exposed.
+
+
+## Comparison with the proof-of-concept capture (main session, 2026-11-17)
+Copied from the old instance (`ops/aws/jobs/poc-copy.sh`, t3.medium, about 2 billed minutes; local copy `~/fieldtest2/poc-old`): 82 iPhone 15 photos (main camera, 26 mm equivalent, 4032 x 3024, no GPS EXIF) taken over 217 s, one every 3 s, trained with plain `ns-train splatfacto colmap` (defaults) on 2025-12-08. Its COLMAP model (already metric from the GPX alignment) has a camera path of 103 m inside an area only 20.6 x 15.1 m: the same short stretch walked several times, so each part of the road and hedges was seen from several passes, directions and lateral positions, by hand.
+Our block: 732 photos along about 150 m from one straight pass at one height (four fixed directions, 0.8 m between pulses). Photos per metre of road are similar (about 4-5); the difference is viewpoint diversity, which near geometry (road, hedges) depends on.
