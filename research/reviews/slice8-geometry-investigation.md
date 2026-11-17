@@ -243,7 +243,29 @@ near-camera or screen-size prune during training, not a larger post-hoc cull.
 
 The same CPU renderer, metric checkpoint 29,999, half resolution. Training views
 selected from `train.json`: pulses 171-219 and 281-309, all four cameras. 284 views
-were available. TRAIN_TABLE_PLACEHOLDER
+were available. The relevant route positions are pulse 171 = s135.5, 180 = 142.5,
+190 = 151.0, 200 = 159.0, 210 = 167.0, 215 = 171.0, 219 = 174.0, 281 = 224.0,
+290 = 231.5, 300 = 239.5, 309 = 247.0. The nominal block starts at s160 and its image
+selection starts at s135.
+
+Training-view fit, half-resolution CPU render against `images_4`:
+
+| stretch | views | cam0 PSNR/SSIM | cam1 PSNR/SSIM | cam2 PSNR/SSIM | cam3 PSNR/SSIM | all PSNR/SSIM |
+|---|---:|---|---|---|---|---|
+| failing train, 171-219 | 180 | 16.91 / 0.562 | 16.68 / 0.666 | 15.92 / 0.585 | 15.99 / 0.387 | 16.38 / 0.550 |
+| working train, 281-309 | 104 | 24.85 / 0.732 | 25.82 / 0.818 | 24.93 / 0.688 | 20.95 / 0.280 | 24.14 / 0.629 |
+
+For comparison, the held-out CPU metrics are 8.33 / 0.402 for the failing views and
+22.23 / 0.677 for the working views. The model therefore fails the training views in
+the same stretch, not only the held-out views. The renderer's tile cap and
+transmittance cutoff were checked against the uncapped render on p180 cam0, p300 cam0
+and p190 cam3; PSNR differed by less than 0.01 dB.
+
+The failure is sharp in route distance. Per-pulse training PSNR is 10.9-18.2 dB from
+pulse 171 (s135.5) through 209 (s166), then jumps to 22.6 dB at pulse 211 (s168) and
+stays 22.6-24.8 dB through 219 (s174). The working stretch is 22.5-25.2 dB throughout.
+This is a scene-stretch failure ending around s168, not a gradual loss of context over
+tens of metres.
 
 Sparse support in the held-out failing and working views:
 
@@ -288,3 +310,51 @@ vegetation. The failing images are all sharp and normally exposed.
 ## Comparison with the proof-of-concept capture (main session, 2026-11-17)
 Copied from the old instance (`ops/aws/jobs/poc-copy.sh`, t3.medium, about 2 billed minutes; local copy `~/fieldtest2/poc-old`): 82 iPhone 15 photos (main camera, 26 mm equivalent, 4032 x 3024, no GPS EXIF) taken over 217 s, one every 3 s, trained with plain `ns-train splatfacto colmap` (defaults) on 2025-12-08. Its COLMAP model (already metric from the GPX alignment) has a camera path of 103 m inside an area only 20.6 x 15.1 m: the same short stretch walked several times, so each part of the road and hedges was seen from several passes, directions and lateral positions, by hand.
 Our block: 732 photos along about 150 m from one straight pass at one height (four fixed directions, 0.8 m between pulses). Photos per metre of road are similar (about 4-5); the difference is viewpoint diversity, which near geometry (road, hedges) depends on.
+
+## Conclusion (2026-11-17)
+
+This is a failure to fit, not overfitting in the usual sense. The model reaches only
+16.38 dB on the training views of the failing stretch, against 24.14 dB on the working
+training views. The held-out failing views are lower still, 8.33 dB, so there is a
+train-to-held-out gap, but the model cannot fit even the training views of this scene.
+The near-camera and giant splats are the optimiser's failed attempt to cover that
+under-constrained stretch, not a successful memorisation of it.
+
+The fit recovers sharply at s168: pulses 171-209 (s135.5-166) score 10.9-18.2 dB,
+pulse 211 (s168) jumps to 22.6 dB, and pulses 211-219 stay at 22.6-24.8 dB. The bad
+stretch is the 25 m pre-block overlap plus the first 8 m of the nominal block. A larger
+margin, or discarding the first 10-20 m of each block, would protect the delivered
+block from the boundary part, but it would not by itself create the missing views of
+the close scene.
+
+The support evidence points at viewpoint coverage, not at along-track parallax. The
+0.8 m baseline subtends about 30 degrees at 1.5 m, which is ample angular parallax.
+What is missing is cross-track, height and repeat-pass diversity: our block is one
+straight pass at one height with four fixed camera directions. The proof-of-concept
+capture covered 103 m of path inside a 20.6 x 15.1 m area over several passes, and its
+82 photos fitted the close road and hedges. Our sparse support is also weaker near the
+failing cameras: observed median depth 13.3 m against 6.2 m, and 18.5% of observed
+points within 5 m against 37.8%.
+
+Implications:
+
+- Capture: add a second pass, or deliberate lateral and height offsets, in narrow
+  lanes. Tighter along-track pulse spacing alone is not the main lever, because the
+  angular baseline at 1.5 m is already large; the missing dimension is where the
+  camera observes the close surface from.
+- Depth/smoothness regularisation: can suppress the near-camera shell and stabilise
+  the optimisation, but cannot recover surfaces that were never seen from enough
+  directions. Treat it as a safety net, not the fix.
+- Masks: vegetation and hedge masks should reduce ambiguous matches and floaters, and
+  are worth adding, but they do not address the stone-wall and open-junction views that
+  also fail. Masks alone will not fix the stretch.
+- Block margin: increase the pre-block overlap from 25 m, or discard the first 10-20 m,
+  to keep the boundary artefact out of the delivered block. This handles the s160-168
+  part, not the capture-diversity problem.
+- Model capacity and resolution: the training views fail at 16.4 dB, so factor 4 plus
+  313k splats may be underfitting the high-frequency stone and grass. A factor-2 or
+  denser-splat run is worth testing after the capture issue is addressed, but the POC
+  evidence says viewpoint diversity is the first lever.
+- The prepared prune-after-refine fix will remove the post-15k 3D-scale tail, but it
+  will not turn a 16 dB underfit into a 24 dB fit. Do not expect it to recover this
+  stretch on its own.
