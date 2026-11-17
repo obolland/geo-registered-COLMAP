@@ -17,3 +17,8 @@ Reviewer: the main session. Code by the DeepSeek peer (commits 4aaaf68, 066185f)
 
 ## Paid run estimate
 Dependencies 5-10 min, S3 pull of 6.4 GB in-region 2-5 min, training 30k MCMC steps on 660 images at 1296 x 864 with up to 1M splats on an L4: about 60-100 min (scaled from typical RTX 4090 timings of 15-25 min, the L4 being about a quarter to a third as fast), evaluation at 10k/20k/30k on 72 images 5 min, upload 5 min. About 1.5-2 h, so about $2-2.50 at $1.24/h; hard cap 4 h (Olly's pre-approval).
+
+## Pilot attempt 1 (2026-11-17 08:11-08:20, about 10 billed minutes)
+Failed at the import preflight before training: nerfview (pinned commit) imports `splines` without declaring it. Fixed in 03e353f with every trainer dependency pinned to a set import-tested together locally. Local checks with gsplat's own loader on the real block: 732 images parsed, train 660 / val 72, val equals heldout.json with no overlap, a sample loads at 1350 x 884 with correctly scaled intrinsics (a macOS-only OpenMP threading crash needed OMP_NUM_THREADS=1 locally; not relevant on Linux).
+
+Follow-up: simple_trainer normalises the scene (normalize=True, scene scale 0.51 here), so its PLY is in normalised coordinates; the inverse of the parser's transform must be applied before the splats are placed in the session ENU frame (pilot quality is unaffected).
