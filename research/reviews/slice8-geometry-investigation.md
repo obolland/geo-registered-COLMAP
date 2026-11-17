@@ -14,7 +14,9 @@ at step 29,999. A handful of these splats, and a handful of near-camera splats, 
 whole held-out views with near-black or near-white colour.
 
 The failure is a training-dynamics problem, not a data, split, pose or point-cloud
-problem, and not missing geometry.
+problem, and not missing geometry. The sharp training-fit edge at pulse 211 is also
+training dynamics: the near-camera opaque splat shell ends there (see the seam
+investigation below).
 
 ## Method
 
@@ -307,54 +309,204 @@ close vegetation and an open junction, and the working stretch also contains clo
 vegetation. The failing images are all sharp and normally exposed.
 
 
+## Seam investigation at pulse 210/211 (2026-11-17)
+
+The sharp training-fit edge at pulse 211 was tested as a possible data seam. All tests are
+local and read the existing `sparse/refined`, `sparse/0`, `priors.json`, `images.json`,
+original EXIF and checkpoint. No AWS resource was used.
+
+### 1. Orientations
+
+Relative rotation of each camera to reference cam2, compared with the calibrated rig
+(`rigs/handlebar-4cam-ft2-calibrated.toml`), in degrees:
+
+| stretch | cam0 median/max | cam1 median/max | cam3 median/max |
+|---|---:|---:|---:|
+| 171-209 | 0.043 / 0.101 | 0.032 / 0.089 | 0.032 / 0.108 |
+| 211-240 | 0.044 / 0.116 | 0.033 / 0.097 | 0.039 / 0.085 |
+| 281-309 | 0.061 / 0.166 | 0.039 / 0.107 | 0.054 / 0.124 |
+
+The rig is rigid to about 0.03-0.06 deg throughout, with no change at 210/211. The angle
+between consecutive absolute rotations is identical across the four cameras to within
+0.01 deg, as it must be for a rigid rig. Around the seam, the all-camera step is 2.281 deg
+for 208-209, 2.628 deg for 209-210, 3.482 deg for 210-211 and 2.284 deg for 211-212. The
+largest local step is 6.122 deg at 204-205. The median is 1.57 deg on the failing stretch
+and 1.84-1.89 deg on the working stretch. There is no orientation step, jump or drift
+starting or ending at 210.
+
+### 2. Sparse point consistency
+
+Track continuity across consecutive pulses is normal at the seam. The point-set Jaccard
+is 0.6119 for 208-209, 0.6226 for 209-210, 0.6212 for 210-211, 0.6146 for 211-212 and
+0.6123 for 212-213. Controls are 0.5788 for 281-282 and 0.5521 for 300-301. If 210/211
+were a merge seam between two point layers, the cross-seam track count would collapse;
+it does not.
+
+For the requested band comparison, A is every point observed by pulses 171-209 and B is
+every point observed by pulses 211-240:
+
+| split | A points | B points | observed both | Jaccard |
+|---|---:|---:|---:|---:|
+| 210/211 | 68,685 | 55,274 | 7,020 | 0.0600 |
+| 250/251 control | 68,192 | 58,844 | 6,025 | 0.0498 |
+| 281/282 control | 75,233 | 45,375 | 4,403 | 0.0379 |
+
+The seam has at least as many cross-band points as the controls. In a 15 m sphere around
+the seam camera, 4,429 points are observed on both sides.
+
+Nearest-neighbour distances between points observed only on one side, inside that 15 m
+sphere, are not consistent with duplicated layers offset by cm or dm:
+
+| split | B-only to A-only median / p90 | fraction < 0.1 m | fraction < 0.2 m | within-band median |
+|---|---:|---:|---:|---:|
+| 210/211 | 0.142 m / 0.390 m | 0.324 | 0.672 | 0.030-0.040 m |
+| 250/251 control | 0.167 m / 0.848 m | 0.274 | 0.586 | 0.028-0.033 m |
+| 281/282 control | 0.173 m / 0.578 m | 0.268 | 0.569 | 0.028-0.032 m |
+
+The opposite direction (A-only to B-only) is dominated by surfaces seen by the early part
+of the route but not by the later part: median 5.56 m at the seam against 3.65 m and
+3.25 m at the controls, with only 5.2%, 2.2% and 3.4% below 0.05 m. Its histogram has no
+secondary peak at 5-20 cm; the mass increases towards metres. A duplicated layer would
+put a local mode at the offset. There is no such mode at the seam, and the seam is not
+closer than the controls in either direction.
+
+### 3. Refine sample and reprojection
+
+The 200k sample is the globally longest tracks; the cutoff is track length 9 of 978,646
+points. Image observations in each band:
+
+| stretch | sample share of observed points | mean track length | median track length | pre-refine reprojection median | post-refine reprojection median |
+|---|---:|---:|---:|---:|---:|
+| 171-209 | 0.476 | 15.1 | 9 | 0.815 px | 2.965 px |
+| 211-240 | 0.548 | 20.3 | 12.5 | 0.753 px | 2.629 px |
+| 281-309 | 0.395 | 12.2 | 7 | 0.867 px | 3.317 px |
+
+The failing stretch is not starved of sample points or long tracks. It has a higher
+sample share than the working stretch and only a slightly lower share than the post-seam
+stretch. Its pre-refine reprojection is between the other two bands, and its post-refine
+reprojection is lower than the working stretch. The points-only adjustment raises the
+image-median error everywhere from about 0.8 px to 2.6-3.3 px; that is a separate quality
+issue, but it does not single out 171-209 and cannot create a step at 211.
+
+### 4. Image metadata and timing
+
+All four cameras, 99 pulses from 160-230 and 281-309: exposure time 0.001 s, f/8, 18 mm,
+white balance 2, AutoISO 100, colour space 1, picture style 132, image size 5184 x 3456,
+orientation 1, and the same EF-S18-55mm lens. The serial number and internal serial
+number are constant per camera. Focus distance and shutter count are not recorded.
+
+ISO is auto and follows the light. It does not switch at 210/211: cam1 goes 640 at 210
+to 800 at 211; cam0 stays 1600 at 211 and becomes 2000 at 212; cam3 stays 1600 at 212
+and becomes 2000 at 213; cam2 stays 800 through the seam. File numbers are contiguous
+within each range. `DateTimeOriginal` and subsecond time are continuous. In
+`images.json`, all 84 images for pulses 200-220 have `flags=[]`, `fix_type=3`,
+`bracket_gap_s=0.2`, and correction age 0-2 s. Pulse spacing is 0.82-0.98 s with no gap
+at 210/211. A montage of pulses 208-213, all four cameras, shows a continuous village
+junction with no scene cut, blank frame or visible exposure change.
+
+### 5. The edge is a near-camera splat boundary
+
+At step 29,999 the checkpoint has a shell of opaque splats within 0.5 m of the training
+cameras. It covers the failing stretch and ends at pulse 211:
+
+| stretch | views | views with an opaque splat < 0.5 m | median nearest splat | opaque splats < 1 m per view |
+|---|---:|---:|---:|---:|
+| 171-209 | 156 | 0.987 | 0.114 m | 97.4 |
+| 211-219 | 36 | 0.028 | 0.662 m | 8.4 |
+
+The per-pulse boundary is sharp. Mean opaque splats within 0.5 m are 15.2 at 209, 14.8
+at 210, 0.0 at 211, 0.0 at 212, 0.0 at 213 and 0.2 at 214. The nearest splat for all four
+cameras is 0.035-0.206 m at 209 and 0.134-0.287 m at 210, then 0.434-0.766 m at 211 and
+0.688-0.751 m at 212. The training PSNR jumps from 14.2 dB at 209 to 22.6 dB at 211 in
+all four cameras at once.
+
+The sparse model has no points anywhere near this shell: the nearest SfM point is
+1.20-1.37 m from every one of these cameras across both stretches (mean 1.264 m on
+171-209, 1.225 m on 211-219, zero views below 1 m). The shell is grown by the optimiser,
+not initialised from the data.
+
+Sparse support does not improve at the edge, so it cannot explain the fit jump. Mean
+per-pulse observed median depth is 15.5 m at 209, 15.9 m at 210, 15.5 m at 211 and 15.1 m
+at 212; share of observed points within 5 m is 0.064, 0.062, 0.057 and 0.049. The
+aggregate observed median depth is 10.59 m for 171-209 but 14.55 m for 211-219, and the
+share within 5 m is 0.248 against 0.072. The post-seam stretch has farther and sparser
+sparse support, yet it fits better because the near shell is absent.
+
+The near shell is not the whole failure, and a post-hoc cull does not cleanly recover it.
+The earlier "near" filter removes only 1,092 splats because 79% of the close opaque
+splats have scale below 0.5 m. Removing everything within 0.5 m raises p180 cam0 from
+7.80 to 13.28 dB but lowers p200 cam0 from 13.63 to 10.81 dB, because it also removes
+splats that contribute to the foreground. The shell explains the sharp occlusion edge;
+the geometry behind it still needs a controlled retrain to assess.
+
+### 6. Verdict
+
+There is no data seam at 210/211. The rig orientation, track continuity, cross-band point
+agreement, refine sample, reprojection, EXIF, file numbering and timing are all
+continuous. The sharp training-fit edge has a training explanation: a near-camera opaque
+splat shell covers essentially every failing training view and stops at pulse 211.
+
+This changes the interpretation of the training-fit table above. The 171-209 PSNR is
+largely a measure of how much the near shell occludes the frame, not of whether the
+geometry behind it is fitted. The sharp jump at 211 is the edge of that shell, not
+evidence that the scene or the capture changes there. The capture-diversity comparison
+with the proof-of-concept remains a hypothesis about why the optimiser grows the shell
+in this stretch; it is not established by the 211 edge.
+
 ## Comparison with the proof-of-concept capture (main session, 2026-11-17)
 Copied from the old instance (`ops/aws/jobs/poc-copy.sh`, t3.medium, about 2 billed minutes; local copy `~/fieldtest2/poc-old`): 82 iPhone 15 photos (main camera, 26 mm equivalent, 4032 x 3024, no GPS EXIF) taken over 217 s, one every 3 s, trained with plain `ns-train splatfacto colmap` (defaults) on 2025-12-08. Its COLMAP model (already metric from the GPX alignment) has a camera path of 103 m inside an area only 20.6 x 15.1 m: the same short stretch walked several times, so each part of the road and hedges was seen from several passes, directions and lateral positions, by hand.
 Our block: 732 photos along about 150 m from one straight pass at one height (four fixed directions, 0.8 m between pulses). Photos per metre of road are similar (about 4-5); the difference is viewpoint diversity, which near geometry (road, hedges) depends on.
 
 ## Conclusion (2026-11-17)
 
-This is a failure to fit, not overfitting in the usual sense. The model reaches only
-16.38 dB on the training views of the failing stretch, against 24.14 dB on the working
-training views. The held-out failing views are lower still, 8.33 dB, so there is a
-train-to-held-out gap, but the model cannot fit even the training views of this scene.
-The near-camera and giant splats are the optimiser's failed attempt to cover that
-under-constrained stretch, not a successful memorisation of it.
+The seam tests rule out a data seam at 210/211. The sharp training-fit edge is the
+boundary of an optimiser-grown, near-camera opaque splat shell, not a change in the
+capture, poses, points or refine sample. The shell covers essentially every training
+view from 171-209 and is absent from 211 onwards. It also means the training-view PSNR
+in 171-209 is largely a measure of occlusion, not of whether the scene behind the shell
+is fitted. The earlier reading of that table as proof of a scene-stretch failure to fit
+is therefore withdrawn.
 
-The fit recovers sharply at s168: pulses 171-209 (s135.5-166) score 10.9-18.2 dB,
-pulse 211 (s168) jumps to 22.6 dB, and pulses 211-219 stay at 22.6-24.8 dB. The bad
-stretch is the 25 m pre-block overlap plus the first 8 m of the nominal block. A larger
-margin, or discarding the first 10-20 m of each block, would protect the delivered
-block from the boundary part, but it would not by itself create the missing views of
-the close scene.
+The held-out failure is still real: 8.33 dB on 180-210 against 22.23 dB on 280-310, and
+the model does not deliver usable views in the failing stretch. What the checkpoint
+cannot tell us is whether the geometry behind the near shell would fit if the shell were
+suppressed. A controlled retrain is needed to separate the two.
 
-The support evidence points at viewpoint coverage, not at along-track parallax. The
-0.8 m baseline subtends about 30 degrees at 1.5 m, which is ample angular parallax.
-What is missing is cross-track, height and repeat-pass diversity: our block is one
-straight pass at one height with four fixed camera directions. The proof-of-concept
-capture covered 103 m of path inside a 20.6 x 15.1 m area over several passes, and its
-82 photos fitted the close road and hedges. Our sparse support is also weaker near the
-failing cameras: observed median depth 13.3 m against 6.2 m, and 18.5% of observed
-points within 5 m against 37.8%.
+The fit jump at 211 cannot be explained by better sparse support either. Observed median
+depth per pulse is 15.5 m at 209, 15.9 m at 210, 15.5 m at 211 and 15.1 m at 212, and the
+share of observed points within 5 m is 0.064, 0.062, 0.057 and 0.049. The post-seam
+aggregate is farther and sparser than the failing aggregate: 14.55 m and 7.2% within 5 m,
+against 10.59 m and 24.8%. The fit improves while near-field support gets worse, because
+the occluding shell disappears.
+
+The support evidence still makes weak near-field support and limited viewpoint coverage
+the leading hypothesis for why the optimiser grows the shell in this stretch. It is a
+hypothesis, not a conclusion from the 211 edge. The proof-of-concept capture covered
+103 m of path inside a 20.6 x 15.1 m area over several passes, and its 82 photos fitted
+the close road and hedges. Our block is one straight pass at one height with four fixed
+camera directions, and the failing stretch has a median observed depth of 10.6 m against
+6.7 m on the working stretch.
 
 Implications:
 
-- Capture: add a second pass, or deliberate lateral and height offsets, in narrow
-  lanes. Tighter along-track pulse spacing alone is not the main lever, because the
-  angular baseline at 1.5 m is already large; the missing dimension is where the
-  camera observes the close surface from.
-- Depth/smoothness regularisation: can suppress the near-camera shell and stabilise
-  the optimisation, but cannot recover surfaces that were never seen from enough
-  directions. Treat it as a safety net, not the fix.
-- Masks: vegetation and hedge masks should reduce ambiguous matches and floaters, and
-  are worth adding, but they do not address the stone-wall and open-junction views that
-  also fail. Masks alone will not fix the stretch.
-- Block margin: increase the pre-block overlap from 25 m, or discard the first 10-20 m,
-  to keep the boundary artefact out of the delivered block. This handles the s160-168
-  part, not the capture-diversity problem.
-- Model capacity and resolution: the training views fail at 16.4 dB, so factor 4 plus
-  313k splats may be underfitting the high-frequency stone and grass. A factor-2 or
-  denser-splat run is worth testing after the capture issue is addressed, but the POC
-  evidence says viewpoint diversity is the first lever.
-- The prepared prune-after-refine fix will remove the post-15k 3D-scale tail, but it
-  will not turn a 16 dB underfit into a 24 dB fit. Do not expect it to recover this
-  stretch on its own.
+- First experiment: a controlled retrain with the prune-after-refine fix plus a
+  near-camera or screen-size prune, or depth regularisation, then measure both training
+  and held-out fit. This tests whether the geometry behind the shell fits. No paid run
+  until Olly approves it.
+- Do not treat the 211 edge as evidence for capture diversity. The edge is training
+  dynamics. Capture diversity remains a plausible reason the shell forms, but the
+  current checkpoint cannot establish it.
+- Capture: a second pass or deliberate lateral and height offsets is still a reasonable
+  capture experiment for narrow lanes. It is not established as the first fix by this
+  investigation.
+- Masks: vegetation and hedge masks should reduce ambiguous matches and floaters and are
+  worth adding, but they do not address the stone-wall and open-junction views.
+- Block margin: a larger margin or discarding the first 10-20 m may keep the shell
+  boundary out of the delivered block, but it does not address the cause and may simply
+  move the boundary.
+- Model capacity and resolution: the fit numbers are contaminated by occlusion, so they
+  do not establish underfitting. Re-measure after a valid shell suppression before
+  spending on factor-2 or denser splats.
+- The prepared prune-after-refine fix removes the post-15k 3D-scale tail, but it does not
+  remove the small-scale near-camera shell. Pair it with a near-camera rule or the shell
+  will remain.
