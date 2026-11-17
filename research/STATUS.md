@@ -265,3 +265,7 @@ New instance i-04f3833f3a68627d6 (g6.2xlarge, eu-west-2a, 150 GB gp3, tag Projec
 - First attempt failed: gsplat's default build (23 channel counts, two GPU types) ran past a 75-minute cap. Cost of the day's GPU time about $2.20 (8 + 83 + 14 minutes).
 - `ops/aws/grab-and-run.sh` waits for capacity (London g6 was scarce all day) and runs one job unattended; refusals are free.
 - Pending for Olly: terminate the old instance i-00779ffa487aebde0, deregister ami-07b4055656e0194ff and delete its snapshot.
+
+## Ideas to research later (Olly, 2026-11-17)
+- Generative priors bolted onto real captures (diffusion-based splat repair and view synthesis such as NVIDIA Difix3D+, CAT3D, ViewCrafter; feed-forward depth/splat priors such as VGGT, MASt3R, AnySplat) to fix near geometry (road, hedges) from single-pass rig captures, after the slice 8 diagnosis.
+- Invented routes: generated 3D worlds (World Labs Marble, Tencent HunyuanWorld) as an alternative or complement to real captures. Routes need not be real, provided they are beautiful, interesting, long enough and metrically scaled (or scalable). Questions: world size and stitching into 20-80 km routes, metric scale, export formats (splats, collision/road surface), consistency at riding speed, VR suitability, licence for commercial use, cost and API access.
