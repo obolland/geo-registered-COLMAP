@@ -532,3 +532,118 @@ Implications:
 
 ## Pruned retrain (main session, 2026-11-17 20:45-21:11, about 27 billed minutes)
 Default strategy, metric frame, prune-after-refine plus near-camera prune at 0.7 m (Olly approved; 0.7 m chosen over 1.0 m so near hedges survive). Held-out 17.7 / 19.6 / 20.4 PSNR at 10k / 20k / 30k (SSIM 0.597 / 0.627 / 0.647, LPIPS 0.709 / 0.645 / 0.610), 312k splats. Pulses 180-210: median 11.1 dB (min 3.5) against 7.9 unpruned; elsewhere unchanged at 22.6. Partial recovery only: something still occludes or fails there. PLY: ~/fieldtest2/splat/pilot/s160-l100-metric-pruned-30k.ply; results s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T204542Z/.
+
+## Pruned retrain inspection (2026-11-17)
+
+Read-only inspection of the completed run. The actual metadata is at
+`s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T204542Z/near-prune.json`
+(run root, not a `results/` subdirectory). Local copies of all checkpoints, stats, cfg and
+the 30k PLY were used. CPU renders are half training resolution, the same renderer and
+ground truth as earlier tables.
+
+### Did the prune run
+
+`near-prune.json`: 0.7 m, camera-centre distance, train cameras only. `cfg.yml` confirms
+`normalize_world_space: false`, `refine_stop_iter: 15000`, `refine_every: 100`,
+`near_prune_m: 0.7`. The log records 294 near-prune events from step 600 to 29900,
+removing 9,481 splats: 4,415 before 5k, 3,159 in 5k-10k, 1,793 in 10k-15k, 83 in
+15k-20k, 18 in 20k-25k and 13 in 25k-30k. The largest single event removed 148.
+
+Opaque splats within 0.7 m of a training camera at the saved checkpoints:
+
+| checkpoint | total splats | <=0.7 m opaque | 0.7-1 m opaque | 1-2 m opaque | 2-5 m opaque | giants | max scale |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 4,999 | 306,682 | 44 | 915 | 11,771 | 27,609 | 1 | 7.08 m |
+| 9,999 | 288,903 | 19 | 789 | 5,056 | 20,146 | 3 | 7.41 m |
+| 14,999 | 387,447 | 6 | 3,517 | 10,328 | 34,591 | 2 | 8.70 m |
+| 19,999 | 362,718 | 2 | 2,651 | 10,305 | 39,700 | 2 | 7.19 m |
+| 24,999 | 334,123 | 0 | 2,584 | 10,907 | 45,803 | 2 | 7.33 m |
+| 29,999 | 312,197 | 0 | 2,598 | 11,588 | 50,747 | 0 | 6.72 m |
+| unpruned 29,999 | 313,256 | 2,275 | 1,657 | 6,669 | 42,120 | 61 | 29.85 m |
+
+The prune ran as intended: the 0.7 m shell is gone at the final checkpoint, the giant tail
+is gone, and the largest final scale is inside the 6.758 m cap. Validation PSNR is 17.73 /
+19.55 / 20.39. The 72 GPU held-out renders give 13.19 dB mean on the 16 failing views
+(median 11.1, min 3.5) and 22.47 dB on the other 56, against 8.33 / 22.23 unpruned.
+
+### What still breaks the failing views
+
+The remaining occlusion is just outside the 0.7 m prune radius. Per-view top projected
+splat, pruned checkpoint:
+
+| stretch | views | top area median | views with top area > image | >5 images |
+|---|---:|---:|---:|---:|
+| train 171-209 | 144 | 1.09 | 75 | 14 |
+| train 211-219 | 36 | 0.42 | 0 | 0 |
+| train 281-309 | 104 | 0.35 | 2 | 0 |
+| held-out 180-210 | 16 | 0.62 | 3 | 3 |
+
+The failing training views still carry 24.8 opaque splats at 0.7-1 m and 393 at 1-2 m on
+average; the working stretch has 2.5 and 116. Their top occluder distances are 16 at
+0.7-1 m, 57 at 1-2 m, 43 at 2-5 m and 28 beyond 5 m. Typical top occluders are a 3.22 m
+scale splat at 1.11 m from p172 cam0, a 2.15 m scale at 0.86 m at p179 cam3, and a 1.75 m
+scale at 1.03 m at p187 cam0. A centre-distance rule at 0.7 m cannot catch these.
+
+The held-out cameras were not in the prune set, so they still have close splats. The 16
+failing held-out views average 5.6 opaque splats within 0.7 m, nearest 0.067 m. Examples:
+p180 cam3 has a 0.74 m scale splat at 0.067 m with projected area 518 times the image;
+p190 cam0 has a 0.55 m scale at 0.32 m (13.8 times the image); p190 cam3 has a 0.23 m
+scale at 0.13 m (11.8 times). This is why p180/190/200 remain low even though the training
+cameras are clear: the held-out camera positions were not protected.
+
+### The 210/211 edge
+
+The old sharp edge at 210/211 is gone. Pruned cam0 training PSNR (mean over available
+train pulses, held-out pulses excluded): 171-191 = 16.64 dB against 15.33 unpruned
+(+1.32); 192-209 = 20.31 against 14.91 (+5.41); 211-219 = 23.70 against 24.04 (-0.34);
+281-309 = 23.94 against 24.86 (-0.92, dominated by p309 cam0 at 18.0 against 24.6). The
+seam itself is now p209 22.79 to p211 23.65, a 0.86 dB difference, not the old 8 dB jump.
+The remaining deficit is earlier and view-dependent: p172, p174, p179, p187 and p198
+are still low in training, while p192-195 and p201-209 mostly recover. The held-out p200
+camera remains low for a separate reason, unprotected position. Top projected area tells
+the same story: 171-191 median 1.82, 192-209 0.66, 211-219 0.42, working 0.35.
+
+### What helps: scale-aware path prune
+
+A post-hoc ellipsoid test on the pruned checkpoint removes a splat when
+`distance_to_nearest_train_camera - max_scale <= 0.7 m` and opacity > 0.5. It removes
+3,264 splats. Selected held-out CPU results, no removal -> ellipsoid:
+
+| view | none | ellipsoid | change |
+|---|---:|---:|---:|
+| p180 cam0 | 7.05 | 13.50 | +6.45 |
+| p180 cam3 | 5.98 | 14.14 | +8.16 |
+| p200 cam0 | 14.07 | 13.37 | -0.70 |
+| p210 cam0 | 22.48 | 22.27 | -0.21 |
+| p300 cam0 | 22.94 | 22.52 | -0.42 |
+| p300 cam3 | 20.24 | 20.23 | -0.01 |
+
+A path-tube version, using the train camera polylines sampled every 5 cm and the same
+ellipsoid offset, removes 3,592 splats. It keeps the p180 gains (13.47 / 14.08) and adds
+p190 cam0 15.77 and cam3 16.93, against 8.0 and 9.8 in the GPU baseline. p200 remains
+13.38, p210 22.16, p300 22.51 / 20.22. A stricter centre-only 3 m and scale > 1 m cull
+removes 133 splats and does not help (p180 unchanged at 7.05 / 3.77, p200 14.06). An
+ellipsoid at 0.5 m is weaker (p180 10.45 / 7.45, p200 13.58); at 0.3 m it is ineffective
+(p180 5.10 / 3.77). The 0.7 m ellipsoid is the useful threshold.
+
+### Verdict and next step
+
+The near prune worked and removed the 0.7 m shell and the giant tail, but it is too
+narrow: the remaining occluders are large splats centred 0.7-2 m away, with 1-3 m scales,
+and the held-out cameras were never in the prune set. The most likely next code fix is a
+scale-aware path-tube prune: remove a splat when its ellipsoid reaches within 0.7 m of the
+continuous training-camera path, not only its centre. This is cheap, uses no held-out
+poses, protects interpolated views, and is supported by the ellipsoid and path-tube culls
+above.
+
+It will not fully recover the block. p180 improves to 13.5-14.1 dB, still below the 22 dB
+working level, and p200 is unchanged by every near cull tried. The early 171-191 stretch
+and p197-200 remain underfit behind the shell; they need masks, depth/smoothness
+regularisation, or more viewpoint support, not another near-radius increase. A 1.0 m
+centre prune was already shown to be harmful post hoc; do not go back to it.
+
+Cheap confirmation before a paid retrain: run the ellipsoid path-tube cull locally over
+all 72 held-out views and the failing training views, and if the gain holds, implement the
+same rule in `PruneAfterRefineStrategy` and run one 30k diagnostic with 0.7 m path-tube
+pruning. No AWS resource was started for this inspection; only read-only `aws s3 cp` was
+used.
