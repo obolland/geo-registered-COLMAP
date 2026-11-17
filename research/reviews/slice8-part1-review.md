@@ -22,3 +22,12 @@ Dependencies 5-10 min, S3 pull of 6.4 GB in-region 2-5 min, training 30k MCMC st
 Failed at the import preflight before training: nerfview (pinned commit) imports `splines` without declaring it. Fixed in 03e353f with every trainer dependency pinned to a set import-tested together locally. Local checks with gsplat's own loader on the real block: 732 images parsed, train 660 / val 72, val equals heldout.json with no overlap, a sample loads at 1350 x 884 with correctly scaled intrinsics (a macOS-only OpenMP threading crash needed OMP_NUM_THREADS=1 locally; not relevant on Linux).
 
 Follow-up: simple_trainer normalises the scene (normalize=True, scene scale 0.51 here), so its PLY is in normalised coordinates; the inverse of the parser's transform must be applied before the splats are placed in the session ENU frame (pilot quality is unaffected).
+
+## Pilot attempt 2 (2026-11-17 09:58-10:38, about 40 billed minutes)
+Training ran 20k of 30k steps, then CUDA ran out of memory (16 GB in use at step 20k against 3.4 GB at 5k, with the splat count fixed at 1M). Held-out PSNR 10.1 at 10k and 8.5 at 20k (SSIM 0.46 / 0.33, LPIPS 0.85 / 0.88): renders are a uniform blur. Training loss fell to about 0.11 by step 1.5k, then rose and became unstable (up to about 1.0 by step 15k). Results: s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T095924Z/.
+
+Ruled out locally: photo/pose pairing (732 of 732 correct), exported pose consistency (recomputed reprojection error median 3.1 px at full resolution, about 0.8 px at training resolution), intrinsics per camera, the held-out split.
+
+Leading hypothesis (unconfirmed): scale. simple_trainer normalises the scene so one unit is about 122 m (transform scale 0.0082); the corridor is about 100 m long but most geometry is 1-5 m from the cameras. Defaults tuned for object-centred scenes (near plane 0.01 units, about 1.2 m here; means learning rate and MCMC noise scaled by scene_scale) are then badly mismatched, consistent with the rising loss, growing splat footprints (memory) and blurred renders.
+
+Runner bug found: run-on-gpu.sh ended the SSM command with `shutdown -c`, so SSM reported Success for the failed job; it now exits with the job's status.

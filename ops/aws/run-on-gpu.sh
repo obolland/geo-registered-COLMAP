@@ -61,8 +61,7 @@ commands=$(python3 -c 'import json, sys; print(json.dumps({"executionTimeout": [
     "$((max_minutes * 60))" \
     "shutdown -h +$((max_minutes + 10))" \
     "echo $encoded | base64 -d >/tmp/georoute_job.sh" \
-    "bash /tmp/georoute_job.sh" \
-    "shutdown -c")
+    "bash /tmp/georoute_job.sh; status=\$?; shutdown -c; exit \$status")
 command_id=$(aws_ ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
     --parameters "$commands" --timeout-seconds 600 \
     --cloud-watch-output-config CloudWatchOutputEnabled=false \
