@@ -23,6 +23,7 @@ RESULTS=$RUN_DIR/results
 LOG=$RUN_DIR/train.log
 TRAIN_TIMEOUT_MIN=${TRAIN_TIMEOUT_MIN:-195}
 MAX_MINUTES=${MAX_MINUTES:-240}
+NEAR_PRUNE_M=${NEAR_PRUNE_M:-1.0}
 GSPLAT_COMMIT=${GSPLAT_COMMIT:-512d366b67073d77ca099ede742683c165dfc23b}
 OWNER=ubuntu
 
@@ -50,6 +51,10 @@ upload_results() {
     echo "TRAIN_TIMEOUT_MIN must be a positive integer below MAX_MINUTES ($MAX_MINUTES), got $TRAIN_TIMEOUT_MIN" >&2
     exit 2
 }
+[[ $NEAR_PRUNE_M =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v value="$NEAR_PRUNE_M" 'BEGIN {exit !(value > 0)}' || {
+    echo "NEAR_PRUNE_M must be a positive number of metres, got $NEAR_PRUNE_M" >&2
+    exit 2
+}
 [[ -f $ROOT/env.sh ]] || { echo "missing $ROOT/env.sh; this is not the training instance" >&2; exit 2; }
 # As the owner: git refuses a repository owned by another user ("dubious ownership") when run as root.
 actual_commit=$(sudo -H -u "$OWNER" git -C "$ROOT/gsplat" rev-parse HEAD)
@@ -61,6 +66,15 @@ trap upload_results EXIT
 
 log "space"
 mkdir -p "$WORK" "$DATA" "$RUN_DIR" "$RESULTS"
+cat >"$RESULTS/near-prune.json" <<JSON
+{
+  "near_prune_m": $NEAR_PRUNE_M,
+  "distance": "camera-centre",
+  "camera_scope": "train",
+  "applies_to": "default subcommand"
+}
+JSON
+log "near-camera prune: $NEAR_PRUNE_M m from training camera centres (centre distance)"
 df -Pk "$WORK" | tail -n 1
 free_kb=$(df -Pk "$WORK" | awk 'NR==2 {print $4}')
 ((free_kb > 15 * 1024 * 1024)) || { echo "less than 15 GB free under $WORK" >&2; exit 1; }
@@ -149,7 +163,11 @@ path = Path(sys.argv[1])
 text = path.read_text()
 strategy_old = '''@dataclass
 class Config:'''
-strategy_new = '''class PruneAfterRefineStrategy(DefaultStrategy):
+strategy_new = '''from gsplat.strategy.ops import remove
+
+
+@dataclass
+class PruneAfterRefineStrategy(DefaultStrategy):
     """Keep pruning after refinement, without growing splats.
 
     The stock strategy returns from step_post_backward at refine_stop_iter, which stops
@@ -157,19 +175,78 @@ strategy_new = '''class PruneAfterRefineStrategy(DefaultStrategy):
     Opacity reset is deliberately not continued: it exists to support further
     densification, and with no growth it only creates a transient dip and can leave the
     final model under-opaque.
+
+    It also prunes splats whose centres are within near_prune_m metres of any training
+    camera centre, every refine_every steps before and after refine_stop_iter. The
+    threshold is expressed in the original world units; configure_near_prune converts it
+    to the parser frame by multiplying by the parser transform scale, so it is correct
+    with or without normalise_world_space.
+
+    Centre distance is used rather than ellipsoid extent. The failure shell is centred
+    0.1-0.5 m from the cameras, so centre distance removes it. A bounding-sphere test
+    (centre distance minus the largest scale) would also remove large splats several
+    metres away, including useful foreground, and the earlier 0.5 m cull test showed
+    that a broad near cull can lower a view's PSNR. The extent test is therefore left out
+    until a retrain shows it is needed.
     """
+
+    near_prune_m: float = 1.0
+    _near_prune_cameras: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
+    _near_prune_world_scale: float = field(default=1.0, init=False, repr=False, compare=False)
+
+    def configure_near_prune(self, camera_centres, world_scale: float):
+        centres = torch.as_tensor(np.asarray(camera_centres), dtype=torch.float32)
+        if centres.ndim != 2 or centres.shape[1] != 3 or len(centres) == 0:
+            raise ValueError(f'near-prune camera centres must be Nx3, got {tuple(centres.shape)}')
+        scale = float(world_scale)
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError(f'near-prune world scale must be positive, got {scale}')
+        self._near_prune_cameras = centres
+        self._near_prune_world_scale = scale
+        print(
+            f'Near-camera prune: {len(centres)} training cameras, '
+            f'{self.near_prune_m:.3f} m original, world scale {scale:.6f}, '
+            f'effective threshold {self.near_prune_m * scale:.6f}'
+        )
+
+    @torch.no_grad()
+    def _near_prune_mask(self, params):
+        if self._near_prune_cameras is None:
+            raise RuntimeError('near-camera prune was not configured before training')
+        means = params['means']
+        cameras = self._near_prune_cameras.to(device=means.device, dtype=means.dtype)
+        threshold = float(self.near_prune_m) * float(self._near_prune_world_scale)
+        mask = torch.zeros(len(means), device=means.device, dtype=torch.bool)
+        for start in range(0, len(means), 8192):
+            chunk = means[start : start + 8192]
+            distance = torch.cdist(chunk, cameras).amin(dim=1)
+            mask[start : start + len(chunk)] = distance <= threshold
+        return mask
 
     def step_post_backward(self, params, optimizers, state, step, info, packed=False, scene=None):
         if step < self.refine_stop_iter:
-            return super().step_post_backward(
+            super().step_post_backward(
                 params, optimizers, state, step, info, packed=packed, scene=scene
             )
-        if step % self.refine_every == 0:
+        elif step % self.refine_every == 0:
             n_prune = self._prune_gs(params, optimizers, state, step, scene=scene)
             if self.verbose:
                 print(
-                    f"Step {step}: {n_prune} GSs pruned after refinement. "
-                    f"Now having {len(params['means'])} GSs."
+                    f'Step {step}: {n_prune} GSs pruned after refinement. '
+                    f'Now having {len(params["means"])} GSs.'
+                )
+
+        if step > self.refine_start_iter and step % self.refine_every == 0:
+            near = self._near_prune_mask(params)
+            n_near = int(near.sum().item())
+            if n_near:
+                with torch.no_grad():
+                    remove(params=params, optimizers=optimizers, state=state, mask=near, scene=scene)
+            if self.verbose:
+                print(
+                    f'Step {step}: {n_near} GSs pruned within '
+                    f'{self.near_prune_m * self._near_prune_world_scale:.3f} parser units '
+                    f'of a training camera. Now having {len(params["means"])} GSs.'
                 )
 
 
@@ -182,8 +259,32 @@ use_old = 'strategy=DefaultStrategy(verbose=True),'
 use_new = 'strategy=PruneAfterRefineStrategy(verbose=True),'
 if text.count(use_old) != 1:
     raise SystemExit(f'default strategy use found {text.count(use_old)} times, expected 1')
-path.write_text(text.replace(use_old, use_new))
-print('prune-after-refine strategy patched')
+text = text.replace(use_old, use_new)
+runner_old = '''        self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
+        print("Scene scale:", self.scene_scale)'''
+runner_new = '''        self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
+        print("Scene scale:", self.scene_scale)
+        if isinstance(self.cfg.strategy, PruneAfterRefineStrategy):
+            if not hasattr(self.parser, "camtoworlds") or not hasattr(self.parser, "transform"):
+                raise ValueError("near-camera pruning requires a COLMAP parser")
+            train_indices = np.asarray(self.trainset.indices, dtype=int)
+            camera_centres = self.parser.camtoworlds[train_indices][:, :3, 3]
+            world_scale = float(np.cbrt(abs(np.linalg.det(self.parser.transform[:3, :3]))))
+            self.cfg.strategy.configure_near_prune(camera_centres, world_scale)'''
+if text.count(runner_old) != 1:
+    raise SystemExit(f'runner scene-scale anchor found {text.count(runner_old)} times, expected 1')
+text = text.replace(runner_old, runner_new)
+strategy_field_old = '''    strategy: Union[DefaultStrategy, MCMCStrategy] = field(
+        default_factory=DefaultStrategy
+    )'''
+strategy_field_new = '''    strategy: Union[PruneAfterRefineStrategy, DefaultStrategy, MCMCStrategy] = field(
+        default_factory=PruneAfterRefineStrategy
+    )'''
+if text.count(strategy_field_old) != 1:
+    raise SystemExit(f'strategy field anchor found {text.count(strategy_field_old)} times, expected 1')
+text = text.replace(strategy_field_old, strategy_field_new)
+path.write_text(text)
+print('prune-after-refine and near-camera prune strategy patched')
 PATCH
 chown "$OWNER:$OWNER" "$WORK/patch-strategy.py"
 as_owner "python $WORK/patch-strategy.py $WORK/examples/simple_trainer.py"
@@ -266,6 +367,10 @@ train_status=0
 while IFS='|' read -r name subcommand extra; do
     [[ -n $name ]] || continue
     [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || { echo "variant name must be plain, got $name" >&2; exit 2; }
+    near_args=""
+    if [[ $subcommand == default ]]; then
+        near_args="--strategy.near-prune-m $NEAR_PRUNE_M"
+    fi
     cat >"$WORK/run-$name.sh" <<TRAIN
 #!/usr/bin/env bash
 set -euo pipefail
@@ -281,7 +386,7 @@ timeout --signal=TERM --kill-after=2m "${per_variant_min}m" python simple_traine
     --disable_video \
     --antialiased \
     --sh_degree 3 \
-    $step_args $extra
+    $step_args $near_args $extra
 TRAIN
     chown "$OWNER:$OWNER" "$WORK/run-$name.sh"
     log "training variant $name: $subcommand $extra ($MAX_STEPS steps, timeout ${per_variant_min} min)"
