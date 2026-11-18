@@ -75,7 +75,9 @@ import sys
 from pathlib import Path
 
 import pycolmap
+from PIL import Image
 
+resized = 0
 data = Path(sys.argv[1])
 out = Path(sys.argv[2])
 train = set(json.loads((data / "train.json").read_text()))
@@ -100,9 +102,19 @@ for image in recon.images.values():
         if not source.is_file():
             raise SystemExit(f"missing image: {source}")
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target_root.name == "images_2":
+            # nerfstudio expects floor(size / 2); images_2 was rounded, so an odd 5415 px width gives 2708
+            # where nerfstudio wants 2707 (run of 2026-11-18). Resize only the images that differ.
+            camera = recon.cameras[image.camera_id]
+            expected = (camera.width // 2, camera.height // 2)
+            with Image.open(source) as picture:
+                if picture.size != expected:
+                    picture.convert("RGB").resize(expected, Image.BICUBIC).save(target, format="PNG")
+                    resized += 1
+                    continue
         target.symlink_to(source.resolve())
 recon.write(str(out / "colmap" / "sparse" / "0"))
-print("prepared", len(train), "train and", len(heldout), "eval images; names carry _train/_eval")
+print("prepared", len(train), "train and", len(heldout), "eval images; names carry _train/_eval;", resized, "images_2 resized to nerfstudio sizes")
 PY
 chown -R "$OWNER:$OWNER" "$WORK"
 

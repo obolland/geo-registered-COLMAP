@@ -1,0 +1,337 @@
+
+=== space (10:07:18)
+/dev/root        151263856 120018788  31228684      80% /
+
+=== pull block blocks/s160-l100 (10:07:18)
+
+=== prepare nerfstudio dataset (metric poses, explicit split, factor 2) (10:08:14)
+prepared 660 train and 72 eval images; names carry _train/_eval
+
+=== nerfstudio environment (10:08:20)
+
+=== reusing /opt/georoute/nerfstudio/venv (10:08:20)
+torch 2.1.2+cu121 cuda 12.1 gsplat 1.4.0 nerfstudio 1.1.5 nerfacc 0.5.2
+No entry for terminal type "unknown";
+using dumb terminal settings.
+<string>:1: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+pkg_resources ok
+
+=== compile CUDA extensions for L4 (sm_89) (10:08:56)
+gsplat CUDA extension ok; nerfacc ok; gpu NVIDIA L4
+
+=== train splatfacto (30k, factor 2, filename train/eval split) (10:20:52)
+──────────────────────────────────────────────────────── Config ────────────────────────────────────────────────────────
+TrainerConfig(
+    _target=<class 'nerfstudio.engine.trainer.Trainer'>,
+    output_dir=PosixPath('outputs'),
+    method_name='splatfacto',
+    experiment_name=None,
+    project_name='nerfstudio-project',
+    timestamp='2026-11-18_102100',
+    machine=MachineConfig(seed=42, num_devices=1, num_machines=1, machine_rank=0, dist_url='auto', device_type='cuda'),
+    logging=LoggingConfig(
+        relative_log_dir=PosixPath('.'),
+        steps_per_log=10,
+        max_buffer_size=20,
+        local_writer=LocalWriterConfig(
+            _target=<class 'nerfstudio.utils.writer.LocalWriter'>,
+            enable=True,
+            stats_to_track=(
+                <EventName.ITER_TRAIN_TIME: 'Train Iter (time)'>,
+                <EventName.TRAIN_RAYS_PER_SEC: 'Train Rays / Sec'>,
+                <EventName.CURR_TEST_PSNR: 'Test PSNR'>,
+                <EventName.VIS_RAYS_PER_SEC: 'Vis Rays / Sec'>,
+                <EventName.TEST_RAYS_PER_SEC: 'Test Rays / Sec'>,
+                <EventName.ETA: 'ETA (time)'>
+            ),
+            max_log_size=10
+        ),
+        profiler='basic'
+    ),
+    viewer=ViewerConfig(
+        relative_log_filename='viewer_log_filename.txt',
+        websocket_port=None,
+        websocket_port_default=7007,
+        websocket_host='0.0.0.0',
+        num_rays_per_chunk=32768,
+        max_num_display_images=512,
+        quit_on_train_completion=True,
+        image_format='jpeg',
+        jpeg_quality=75,
+        make_share_url=False,
+        camera_frustum_scale=0.1,
+        default_composite_depth=True
+    ),
+    pipeline=VanillaPipelineConfig(
+        _target=<class 'nerfstudio.pipelines.base_pipeline.VanillaPipeline'>,
+        datamanager=FullImageDatamanagerConfig(
+            _target=<class 'nerfstudio.data.datamanagers.full_images_datamanager.FullImageDatamanager'>,
+            data=None,
+            masks_on_gpu=False,
+            images_on_gpu=False,
+            dataparser=ColmapDataParserConfig(
+                _target=<class 'nerfstudio.data.dataparsers.colmap_dataparser.ColmapDataParser'>,
+                data=PosixPath('/opt/georoute/nerfstudio-work/20261118T100718Z/ns-data'),
+                scale_factor=1.0,
+                downscale_factor=2,
+                downscale_rounding_mode='floor',
+                scene_scale=1.0,
+                orientation_method='up',
+                center_method='poses',
+                auto_scale_poses=True,
+                assume_colmap_world_coordinate_convention=True,
+                eval_mode='filename',
+                train_split_fraction=0.9,
+                eval_interval=8,
+                depth_unit_scale_factor=0.001,
+                images_path=PosixPath('images'),
+                masks_path=None,
+                depths_path=None,
+                colmap_path=PosixPath('colmap/sparse/0'),
+                load_3D_points=True,
+                max_2D_matches_per_3D_point=0
+            ),
+            camera_res_scale_factor=1.0,
+            eval_num_images_to_sample_from=-1,
+            eval_num_times_to_repeat_images=-1,
+            eval_image_indices=(0,),
+            cache_images='gpu',
+            cache_images_type='uint8',
+            max_thread_workers=None,
+            train_cameras_sampling_strategy='random',
+            train_cameras_sampling_seed=42,
+            fps_reset_every=100
+        ),
+        model=SplatfactoModelConfig(
+            _target=<class 'nerfstudio.models.splatfacto.SplatfactoModel'>,
+            enable_collider=True,
+            collider_params={'near_plane': 2.0, 'far_plane': 6.0},
+            loss_coefficients={'rgb_loss_coarse': 1.0, 'rgb_loss_fine': 1.0},
+            eval_num_rays_per_chunk=4096,
+            prompt=None,
+            warmup_length=500,
+            refine_every=100,
+            resolution_schedule=3000,
+            background_color='random',
+            num_downscales=2,
+            cull_alpha_thresh=0.1,
+            cull_scale_thresh=0.5,
+            reset_alpha_every=30,
+            densify_grad_thresh=0.0008,
+            use_absgrad=True,
+            densify_size_thresh=0.01,
+            n_split_samples=2,
+            sh_degree_interval=1000,
+            cull_screen_size=0.15,
+            split_screen_size=0.05,
+            stop_screen_size_at=4000,
+            random_init=False,
+            num_random=50000,
+            random_scale=10.0,
+            ssim_lambda=0.2,
+            stop_split_at=15000,
+            sh_degree=3,
+            use_scale_regularization=False,
+            max_gauss_ratio=10.0,
+            output_depth_during_training=False,
+            rasterize_mode='classic',
+            camera_optimizer=CameraOptimizerConfig(
+                _target=<class 'nerfstudio.cameras.camera_optimizers.CameraOptimizer'>,
+                mode='off',
+                trans_l2_penalty=0.01,
+                rot_l2_penalty=0.001,
+                optimizer=None,
+                scheduler=None
+            ),
+            use_bilateral_grid=False,
+            grid_shape=(16, 16, 8),
+            color_corrected_metrics=False
+        )
+    ),
+    optimizers={
+        'means': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.00016,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': ExponentialDecaySchedulerConfig(
+                _target=<class 'nerfstudio.engine.schedulers.ExponentialDecayScheduler'>,
+                lr_pre_warmup=1e-08,
+                lr_final=1.6e-06,
+                warmup_steps=0,
+                max_steps=30000,
+                ramp='cosine'
+            )
+        },
+        'features_dc': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.0025,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': None
+        },
+        'features_rest': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.000125,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': None
+        },
+        'opacities': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.05,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': None
+        },
+        'scales': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.005,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': None
+        },
+        'quats': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.001,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': None
+        },
+        'camera_opt': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.0001,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': ExponentialDecaySchedulerConfig(
+                _target=<class 'nerfstudio.engine.schedulers.ExponentialDecayScheduler'>,
+                lr_pre_warmup=0,
+                lr_final=5e-07,
+                warmup_steps=1000,
+                max_steps=30000,
+                ramp='cosine'
+            )
+        },
+        'bilateral_grid': {
+            'optimizer': AdamOptimizerConfig(
+                _target=<class 'torch.optim.adam.Adam'>,
+                lr=0.002,
+                eps=1e-15,
+                max_norm=None,
+                weight_decay=0
+            ),
+            'scheduler': ExponentialDecaySchedulerConfig(
+                _target=<class 'nerfstudio.engine.schedulers.ExponentialDecayScheduler'>,
+                lr_pre_warmup=0,
+                lr_final=0.0001,
+                warmup_steps=1000,
+                max_steps=30000,
+                ramp='cosine'
+            )
+        }
+    },
+    vis='tensorboard',
+    data=None,
+    prompt=None,
+    relative_model_dir=PosixPath('nerfstudio_models'),
+    load_scheduler=True,
+    steps_per_save=2000,
+    steps_per_eval_batch=0,
+    steps_per_eval_image=100,
+    steps_per_eval_all_images=1000,
+    max_num_iterations=30000,
+    mixed_precision=False,
+    use_grad_scaler=False,
+    save_only_latest_checkpoint=True,
+    load_dir=None,
+    load_step=None,
+    load_config=None,
+    load_checkpoint=None,
+    log_gradients=False,
+    gradient_accumulation_steps={},
+    start_paused=False
+)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[10:21:00] Saving config to: outputs/unnamed/splatfacto/2026-11-18_102100/config.yml            experiment_config.py:136
+           Saving checkpoints to: outputs/unnamed/splatfacto/2026-11-18_102100/nerfstudio_models          trainer.py:142
+Train dataset has over 500 images, overriding cache_images to cpu
+No Nerfstudio checkpoint to load, so training from scratch.
+logging events to: outputs/unnamed/splatfacto/2026-11-18_102100
+[10:21:12] Caching / undistorting train images                                            full_images_datamanager.py:230
+
+Printing profiling stats, from longest to shortest duration in seconds
+Trainer.train_iteration: 11.2266             
+VanillaPipeline.get_train_loss_dict: 11.2259             
+Traceback (most recent call last):
+  File "/opt/georoute/nerfstudio/venv/bin/ns-train", line 6, in <module>
+    sys.exit(entrypoint())
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/scripts/train.py", line 262, in entrypoint
+    main(
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/scripts/train.py", line 247, in main
+    launch(
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/scripts/train.py", line 189, in launch
+    main_func(local_rank=0, world_size=world_size, config=config)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/scripts/train.py", line 100, in train_loop
+    trainer.train()
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/engine/trainer.py", line 266, in train
+    loss, loss_dict, metrics_dict = self.train_iteration(step)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/utils/profiler.py", line 111, in inner
+    out = func(*args, **kwargs)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/engine/trainer.py", line 502, in train_iteration
+    _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/utils/profiler.py", line 111, in inner
+    out = func(*args, **kwargs)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/pipelines/base_pipeline.py", line 299, in get_train_loss_dict
+    ray_bundle, batch = self.datamanager.next_train(step)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/data/datamanagers/full_images_datamanager.py", line 352, in next_train
+    data = self.cached_train[image_idx]
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10.19-linux-x86_64-gnu/lib/python3.10/functools.py", line 981, in __get__
+    val = self.func(instance)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/data/datamanagers/full_images_datamanager.py", line 183, in cached_train
+    return self._load_images("train", cache_images_device=self.config.cache_images)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/data/datamanagers/full_images_datamanager.py", line 232, in _load_images
+    undistorted_images = list(
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/rich/progress.py", line 173, in track
+    yield from progress.track(
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/rich/progress.py", line 1226, in track
+    for value in sequence:
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10.19-linux-x86_64-gnu/lib/python3.10/concurrent/futures/_base.py", line 621, in result_iterator
+    yield _result_or_cancel(fs.pop())
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10.19-linux-x86_64-gnu/lib/python3.10/concurrent/futures/_base.py", line 319, in _result_or_cancel
+    return fut.result(timeout)
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10.19-linux-x86_64-gnu/lib/python3.10/concurrent/futures/_base.py", line 458, in result
+    return self.__get_result()
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10.19-linux-x86_64-gnu/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
+    raise self._exception
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10.19-linux-x86_64-gnu/lib/python3.10/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/nerfstudio/data/datamanagers/full_images_datamanager.py", line 207, in undistort_idx
+    assert data["image"].shape[1] == camera.width.item() and data["image"].shape[0] == camera.height.item(), (
+AssertionError: The size of image (2708, 1768) loaded does not match the camera parameters ((2707, 1768))
+
+=== training finished with status 1 (10:21:25)
+
+=== uploading results (job status 1) (10:21:25)
+results uploaded to s3://georoute-splat-data-086341361260/pilot/s160-l100/20261118T100718Z/nerfstudio
+
