@@ -745,3 +745,133 @@ timeout.
 
 ## Combined retrain (main session, 2026-11-17 22:38 - 2026-11-18 00:04, about 87 billed minutes)
 Path-tube body prune at 0.5 m (lowered from 0.7 m so flat road splats about 1.2 m below the cameras survive), data factor 2, depth loss from sparse points (lambda 0.005), prune-after-refine, metric frame. Held-out 20.3 / 22.5 / 23.0 PSNR at 10k / 20k / 30k (SSIM 0.679 / 0.702 / 0.709, LPIPS 0.672 / 0.629 / 0.612), 458k splats. Best so far (previous best 20.4 / 0.647). PLY ~/fieldtest2/splat/pilot/s160-l100-combined-30k.ply (108 MB); results s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T223802Z/. Per-view and failing-stretch breakdown not yet computed.
+
+## Road visibility and capture recommendation (2026-11-18)
+
+This check uses the refined block poses, the PINHOLE intrinsics and the published route
+path transformed from the segment frame into the session ENU frame. It is geometric
+visibility, not occlusion-aware, so the counts are upper bounds. The nominal block is
+s=160-260, sampled as 101 one-metre road patches on the path centreline.
+
+### Camera geometry
+
+Per camera across the 165 training images in the block:
+
+| camera | height above road median (p5-p95) | pitch median (range) | nearest horizontal road at bottom edge | nearest 3D |
+|---|---|---:|---:|---:|
+| cam0 | 1.194 m (1.158-1.236) | -0.97 deg (-7.55 to 9.99) | 2.812 m | 3.076 m |
+| cam1 | 1.198 m (1.168-1.237) | -1.18 deg (-7.14 to 11.76) | 2.952 m | 3.212 m |
+| cam2 | 1.195 m (1.167-1.233) | -1.43 deg (-7.27 to 11.41) | 2.951 m | 3.215 m |
+| cam3 | 1.195 m (1.169-1.234) | -0.79 deg (-7.19 to 9.66) | 2.923 m | 3.184 m |
+
+The cameras are level to within about 1.4 deg in the median, with the expected excursions
+on turns. The bottom image edge is about 22-23 deg below horizontal, so the road closer
+than 2.8-3.0 m horizontally (3.1-3.2 m in 3D) is outside every image. This confirms the
+1.18 m / 4300 px / 3530 px estimate.
+
+### What each road patch sees
+
+For each of the 101 patches, count training images whose projection contains the patch,
+split by the camera-to-patch distance (the same result as route-s offset because the
+patches lie on the path):
+
+| camera-to-patch distance | views per patch, min / median / max | patches with zero |
+|---|---:|---:|
+| 0-3 m | 0 / 0 / 0 | 101 |
+| 3-6 m | 2 / 6 / 9 | 0 |
+| 6-10 m | 6 / 10 / 16 | 0 |
+
+Every patch is seen at least 56 times in total (median 193), but no patch is ever seen
+from within 3 m. The near-road sections are therefore **never observed at close range**,
+not globally unobserved. The distant observations are grazing views, which explains the
+blur and floaters where the rider is close to the surface even though the same patch has
+many far views.
+
+### Capture options, simulated on the same poses
+
+A downward pitch was applied to all four training cameras (rotation about the camera x
+axis), keeping centres and intrinsics. Distance bands use the camera-to-patch distance.
+Flat-road approximation: height 1.195 m, vertical half-FOV 22.3 deg, current pitch about
+-1 deg.
+
+| added pitch down | road band at bottom edge (approx) | 0-3 m views median / zero patches | 3-6 m median | 6-10 m median |
+|---:|---|---:|---:|---:|
+| 0 deg (current) | 2.9 m to horizon | 0 / 101 | 6 | 10 |
+| 10 deg | 1.9 m to horizon | 2 / 12 | 8 | 10 |
+| 15 deg | 1.56 m to horizon | 2 / 9 | 8 | 10 |
+| 20 deg | 1.31 m to horizon | 4 / 4 | 8 | 10 |
+| 25 deg | 1.09 m to about 27 m | 4 / 0 | 7 | 10 |
+| 30 deg | 0.92 m to about 9 m | 4 / 0 | 7 | 8 |
+| 45 deg | 0.50 m to about 2.9 m | 4 / 0 | 7 | 2 (band mostly lost) |
+
+The 25-30 deg case is the first that covers every near patch, at the cost of far horizon
+coverage. Pitching only one of the four cameras down 20-25 deg would add near views without
+losing the forward camera's horizon; pitching all four degrades the far scene.
+
+A dedicated down-facing camera per pulse at 50 deg below horizontal (same intrinsics,
+route heading) gives 0-3 m views median 2, max 3, with 1 patch still zero; it gives almost
+nothing at 3-6 m and nothing at 6-10 m. One such camera is a near-field filler, not a
+standalone capture. Two down cameras (fore/aft) or a wider FOV would remove the remaining
+zero patch.
+
+A return pass in the opposite direction does not change the vertical cutoff: 0-3 m stays
+zero, while 3-6 and 6-10 m views roughly double (about 12 and 20 median). It helps texture
+and cross-track parallax, not the missing near road.
+
+Side cameras at a true 50 deg yaw, kept level, also do not help the near band: the bottom
+edge is still 2.9 m away. If they are pitched 50 deg down, they cover a lateral verge strip
+around 0.4-2.3 m to the side but not the path centreline (the geometric test gives zero
+centreline views). Use a dedicated down camera, not a side yaw, for the road under the
+bike.
+
+Recommended capture change, in order:
+
+1. Add one dedicated down camera per pulse at 50-60 deg down, ideally two fore/aft or a
+   wider lens, to give every 0-3 m patch 2-4 views.
+2. Pitch one existing forward camera down 20-25 deg as a cheaper partial alternative;
+   keep the other forward cameras level for the far scene.
+3. A return pass is useful for 3-10 m texture and parallax but cannot recover 0-3 m.
+4. Do not expect side yaw alone to fix the near road.
+
+## Nerfstudio splatfacto control (prepared, not run)
+
+Script: `ops/aws/jobs/nerfstudio-control.sh`. It is an isolated control, not a change to
+the production trainer.
+
+POC config: `~/fieldtest2/poc-old/outputs/unnamed/splatfacto/2025-12-29_214858/config.yml`
+records splatfacto, 30,000 iterations, downscale_factor 1, orientation/center none and
+auto_scale_poses false. It does not record the package version. The last PyPI nerfstudio
+release is 1.1.5 (2024-11-11), whose pins are `gsplat==1.4.0`, `nerfacc==0.5.2`,
+`torch>=1.13.1`, `torchvision>=0.14.1`. That is the closest reproducible POC-era pin.
+
+Local Linux x86_64 Python 3.10 resolution (uv, 2026-11-18) succeeded for 250 packages
+with: `nerfstudio==1.1.5`, `gsplat==1.4.0`, `nerfacc==0.5.2`, `torch==2.1.2`,
+`torchvision==0.16.2`, `numpy==1.26.4`. gsplat 1.4.0 is a `py3-none-any` wheel and
+JIT-compiles its CUDA extension on first import; it is not built during pip install. With
+the instance toolkit (CUDA 12.9) the script sets `TORCH_CUDA_ARCH_LIST=8.9`. The gsplat
+prebuilt-wheel indexes cover other torch/CUDA combinations, not this one. Expect a first
+import compile of about 80 s (reported for gsplat 1.4) but allow 5-10 min for gsplat and
+nerfacc together. This was resolved locally; the actual CUDA compile cannot be tested on
+this Mac.
+
+The script creates `/opt/georoute/nerfstudio/venv` with conda Python 3.10 only if
+`ns-train` is absent, installs the pins above, compiles the extensions, then trains from
+the same block at factor 2. It builds a control dataset with `images` (for the split
+lists), `images_2` with `.JPG` symlinks to our PNGs (nerfstudio's downscale suffix
+lookup expects the original `.JPG` names), and `colmap/sparse/0`. `train_list.txt` and
+`test_list.txt` are exactly the block train/heldout lists, so the split is identical to
+the gsplat runs. The training command is plain splatfacto with 30k iterations,
+`--downscale_factor 2`, `--orientation_method none`, `--center_method none`,
+`--auto_scale_poses False`, then `ns-eval` on the test list and
+`ns-export gaussian-splat` to PLY. Results upload to
+`s3://.../pilot/$BLOCK/$RUN_ID/nerfstudio/`.
+
+Factor 2 is a deliberate deviation from the POC's downscale_factor 1: the block has 660
+images at up to 5402 px and the gsplat combined run also used factor 2. Factor 1 would be
+the closest POC resolution match but is much slower; the job can be changed by setting
+`--downscale_factor 1` and providing the full images (they are in the block).
+
+Estimated first-run cost: 10-20 min install/compile, then 60-120 min training at 30k and
+factor 2; `TRAIN_TIMEOUT_MIN=180`, `MAX_MINUTES=210`. `ops/aws/run-on-gpu.sh` accepts at
+most 240. The job has not been run and no AWS resource was started. `images_2` (4.81 GB)
+must be uploaded to the block before either the combined job or the control can pull it.
