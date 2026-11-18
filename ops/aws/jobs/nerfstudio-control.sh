@@ -68,31 +68,41 @@ as_owner() { sudo -H -u "$OWNER" bash -c "source $ROOT/env.sh && $*"; }
 
 log "prepare nerfstudio dataset (metric poses, explicit split, factor 2)"
 rm -rf "$NS_DATA"
-mkdir -p "$NS_DATA/colmap/sparse"
-ln -s "$DATA/images" "$NS_DATA/images"
-ln -s "$DATA/sparse/0" "$NS_DATA/colmap/sparse/0"
-python3 - "$DATA" "$NS_DATA" <<'PY'
+mkdir -p "$NS_DATA/colmap/sparse/0" "$NS_DATA/images" "$NS_DATA/images_2"
+"$ROOT/venv/bin/python" - "$DATA" "$NS_DATA" <<'PY'
 import json
-import os
 import sys
 from pathlib import Path
 
+import pycolmap
+
 data = Path(sys.argv[1])
 out = Path(sys.argv[2])
-train = json.loads((data / "train.json").read_text())
-heldout = json.loads((data / "heldout.json").read_text())
-(out / "train_list.txt").write_text("\n".join(train) + "\n")
-(out / "test_list.txt").write_text("\n".join(heldout) + "\n")
-src = data / "images_2"
-dst = out / "images_2"
-for path in sorted(src.rglob("*.png")):
-    rel = path.relative_to(src).with_suffix(".JPG")
-    target = dst / rel
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or target.is_symlink():
-        target.unlink()
-    target.symlink_to(path)
-print("prepared", len(train), "train,", len(heldout), "test,", len(list(dst.rglob("*.JPG"))), "factor-2 links")
+train = set(json.loads((data / "train.json").read_text()))
+heldout = set(json.loads((data / "heldout.json").read_text()))
+assert not (train & heldout)
+assert train | heldout == {im.name for im in pycolmap.Reconstruction(data / "sparse/0").images.values()}
+recon = pycolmap.Reconstruction(data / "sparse/0")
+for image in recon.images.values():
+    name = image.name
+    suffix = "_train" if name in train else "_eval" if name in heldout else None
+    if suffix is None:
+        raise SystemExit(f"image not in either split: {name}")
+    path = Path(name)
+    renamed = str(path.with_name(path.stem + suffix + path.suffix))
+    image.name = renamed
+    for source_root, target_root, source_suffix, target_suffix in [
+        (data / "images", out / "images", path.suffix, path.suffix),
+        (data / "images_2", out / "images_2", ".png", ".JPG"),
+    ]:
+        source = source_root / path.with_suffix(source_suffix)
+        target = target_root / Path(renamed).with_suffix(target_suffix)
+        if not source.is_file():
+            raise SystemExit(f"missing image: {source}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source.resolve())
+recon.write(str(out / "colmap" / "sparse" / "0"))
+print("prepared", len(train), "train and", len(heldout), "eval images; names carry _train/_eval")
 PY
 chown -R "$OWNER:$OWNER" "$WORK"
 
@@ -108,7 +118,7 @@ if [[ ! -x $NS_VENV/bin/ns-train ]]; then
     as_owner "$NS_VENV/bin/pip install torch==2.1.2 torchvision==0.16.2 \
         --index-url https://download.pytorch.org/whl/cu121" 2>&1 | tee -a "$LOG"
     as_owner "$NS_VENV/bin/pip install numpy==1.26.4 nerfstudio==1.1.5 \
-        gsplat==1.4.0 nerfacc==0.5.2" 2>&1 | tee -a "$LOG"
+        gsplat==1.4.0 nerfacc==0.5.2 pymeshlab==2025.7.post1" 2>&1 | tee -a "$LOG"
     as_owner "$NS_VENV/bin/pip check" 2>&1 | tee -a "$LOG"
 else
     log "reusing $NS_VENV"
@@ -125,7 +135,7 @@ assert _C is not None
 print('gsplat CUDA extension ok; nerfacc ok; gpu', torch.cuda.get_device_name(0))
 PY" 2>&1 | tee -a "$LOG"
 
-log "train splatfacto (30k, factor 2, explicit train/held-out lists)"
+log "train splatfacto (30k, factor 2, filename train/eval split)"
 cat >"$WORK/run.sh" <<TRAIN
 #!/usr/bin/env bash
 set -euo pipefail
@@ -135,12 +145,14 @@ export TORCH_EXTENSIONS_DIR=$NS_ROOT/torch_extensions
 export MAX_JOBS=8
 export CUDA_VISIBLE_DEVICES=0
 cd $RESULTS
-timeout --signal=TERM --kill-after=2m "${TRAIN_TIMEOUT_MIN}m" $NS_VENV/bin/ns-train splatfacto colmap \
-    --data $NS_DATA \
+timeout --signal=TERM --kill-after=2m "${TRAIN_TIMEOUT_MIN}m" $NS_VENV/bin/ns-train splatfacto \
     --max-num-iterations 30000 \
-    --downscale_factor 2 \
     --viewer.quit-on-train-completion True \
-    --vis tensorboard
+    --vis tensorboard \
+    colmap \
+    --data $NS_DATA \
+    --downscale-factor 2 \
+    --eval-mode filename
 TRAIN
 chown "$OWNER:$OWNER" "$WORK/run.sh"
 set +e

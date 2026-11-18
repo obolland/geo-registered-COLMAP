@@ -854,24 +854,46 @@ import compile of about 80 s (reported for gsplat 1.4) but allow 5-10 min for gs
 nerfacc together. This was resolved locally; the actual CUDA compile cannot be tested on
 this Mac.
 
-The script creates `/opt/georoute/nerfstudio/venv` with conda Python 3.10 only if
-`ns-train` is absent, installs the pins above, compiles the extensions, then trains from
-the same block at factor 2. It builds a control dataset with `images` (for the split
-lists), `images_2` with `.JPG` symlinks to our PNGs (nerfstudio's downscale suffix
-lookup expects the original `.JPG` names), and `colmap/sparse/0`. `train_list.txt` and
-`test_list.txt` are exactly the block train/heldout lists, so the split is identical to
-the gsplat runs. The training command is plain splatfacto with 30k iterations,
-`--downscale_factor 2`, `--orientation_method none`, `--center_method none`,
-`--auto_scale_poses False`, then `ns-eval` on the test list and
-`ns-export gaussian-splat` to PLY. Results upload to
+The script builds `/opt/georoute/nerfstudio/venv` with uv only if `ns-train` is absent
+(the training instance has no conda): `uv venv --python 3.10 --python-preference
+only-managed`, then the pins above plus `pymeshlab==2025.7.post1`. The pymeshlab pin is
+required: `ns-export gaussian-splat` imports it and fails without it. Nerfstudio's own
+orientation, centring and pose scaling defaults are kept (commit 18d7cc0).
+
+The held-out split needs an explicit mechanism: `ColmapDataParser` ignores
+`train_list.txt`; its eval modes are `fraction` (default), `filename`, `interval` and
+`all`. The job uses `--eval-mode filename` and rewrites the dataset so filenames carry the
+split. Each model image name `stem.JPG` becomes `stem_train.JPG` or `stem_eval.JPG` in the
+rewritten sparse model (pycolmap `Reconstruction.write`), and the symlinked files are
+named to match: `images/` keeps the original suffix, `images_2/` uses `.JPG` names
+pointing at our PNGs (nerfstudio's downscale suffix lookup expects the original names).
+
+Verified locally in a uv-managed Python 3.10 venv with CPU torch 2.1.2, numpy 1.26.4,
+nerfstudio 1.1.5, gsplat 1.4.0, nerfacc 0.5.2 and pymeshlab 2025.7.post1. Running the
+prepared dataset through `ColmapDataParserConfig(data=..., colmap_path=colmap/sparse/0,
+downscale_factor=2, eval_mode="filename")` gives train 660 / eval 72, and the relative
+paths match `train.json` / `heldout.json` exactly after stripping `_train`/`_eval`
+(missing 0, extra 0). The training command is ordered as tyro expects, trainer args
+before the `colmap` subcommand, dataparser args after, hyphenated:
+
+```
+ns-train splatfacto --max-num-iterations 30000 \
+    --viewer.quit-on-train-completion True --vis tensorboard \
+    colmap --data $NS_DATA --downscale-factor 2 --eval-mode filename
+```
+
+That exact argument line parses (exit 0 with `--help`). `ns-eval` runs on the eval split
+from the config and `ns-export gaussian-splat` writes `splat.ply`. Results upload to
 `s3://.../pilot/$BLOCK/$RUN_ID/nerfstudio/`.
 
 Factor 2 is a deliberate deviation from the POC's downscale_factor 1: the block has 660
 images at up to 5402 px and the gsplat combined run also used factor 2. Factor 1 would be
 the closest POC resolution match but is much slower; the job can be changed by setting
-`--downscale_factor 1` and providing the full images (they are in the block).
+`--downscale-factor 1` and providing the full images (they are in the block).
 
 Estimated first-run cost: 10-20 min install/compile, then 60-120 min training at 30k and
 factor 2; `TRAIN_TIMEOUT_MIN=180`, `MAX_MINUTES=210`. `ops/aws/run-on-gpu.sh` accepts at
-most 240. The job has not been run and no AWS resource was started. `images_2` (4.81 GB)
-must be uploaded to the block before either the combined job or the control can pull it.
+most 240. The job has not been run and no AWS resource was started. The split, parser and
+CLI parse are verified locally on CPU; the untested step is the first CUDA import compile
+of gsplat/nerfacc on the instance. `images_2` (4.81 GB) must be uploaded to the block
+before either the combined job or the control can pull it.
