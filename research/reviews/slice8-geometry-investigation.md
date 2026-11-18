@@ -742,3 +742,6 @@ roughly 4x the rasterisation work, with depth loading and path prunes on top: es
 60-90 min. The env sets `TRAIN_TIMEOUT_MIN=150`, `MAX_MINUTES=200`, one 30k variant.
 That leaves headroom for a slow factor-2 run while preserving checkpoints/results on
 timeout.
+
+## Combined retrain (main session, 2026-11-17 22:38 - 2026-11-18 00:04, about 87 billed minutes)
+Path-tube body prune at 0.5 m (lowered from 0.7 m so flat road splats about 1.2 m below the cameras survive), data factor 2, depth loss from sparse points (lambda 0.005), prune-after-refine, metric frame. Held-out 20.3 / 22.5 / 23.0 PSNR at 10k / 20k / 30k (SSIM 0.679 / 0.702 / 0.709, LPIPS 0.672 / 0.629 / 0.612), 458k splats. Best so far (previous best 20.4 / 0.647). PLY ~/fieldtest2/splat/pilot/s160-l100-combined-30k.ply (108 MB); results s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T223802Z/. Per-view and failing-stretch breakdown not yet computed.
