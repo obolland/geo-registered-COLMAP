@@ -125,6 +125,10 @@ else
 fi
 as_owner "$NS_VENV/bin/python -c 'import importlib.metadata, torch, gsplat, nerfstudio, nerfacc; print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gsplat\", gsplat.__version__, \"nerfstudio\", importlib.metadata.version(\"nerfstudio\"), \"nerfacc\", nerfacc.__version__)'" 2>&1 | tee -a "$LOG"
 
+# torch 2.1's cpp_extension imports pkg_resources, which setuptools removed in recent releases; the
+# 2026-11-18 run failed on it. Pin a release that still ships it (idempotent on a reused venv).
+as_owner "$NS_VENV/bin/pip install -q setuptools==69.5.1 && $NS_VENV/bin/python -c 'import pkg_resources, torch.utils.cpp_extension; print(\"pkg_resources ok\")'" 2>&1 | tee -a "$LOG"
+
 log "compile CUDA extensions for L4 (sm_89)"
 as_owner "export TORCH_CUDA_ARCH_LIST=8.9 TORCH_EXTENSIONS_DIR=$NS_ROOT/torch_extensions MAX_JOBS=8; \
     cd /tmp && $NS_VENV/bin/python - <<'PY'

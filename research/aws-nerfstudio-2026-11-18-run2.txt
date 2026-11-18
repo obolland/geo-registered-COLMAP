@@ -1,0 +1,26 @@
+
+=== space (09:52:59)
+/dev/root        151263856 108270224  42977248      72% /
+
+=== pull block blocks/s160-l100 (09:52:59)
+
+=== prepare nerfstudio dataset (metric poses, explicit split, factor 2) (09:53:52)
+prepared 660 train and 72 eval images; names carry _train/_eval
+
+=== nerfstudio environment (09:53:59)
+
+=== reusing /opt/georoute/nerfstudio/venv (09:53:59)
+torch 2.1.2+cu121 cuda 12.1 gsplat 1.4.0 nerfstudio 1.1.5 nerfacc 0.5.2
+
+=== compile CUDA extensions for L4 (sm_89) (09:54:16)
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/gsplat/cuda/_backend.py", line 8, in <module>
+    from torch.utils.cpp_extension import (
+  File "/opt/georoute/nerfstudio/venv/lib/python3.10/site-packages/torch/utils/cpp_extension.py", line 28, in <module>
+    from pkg_resources import packaging  # type: ignore[attr-defined]
+ModuleNotFoundError: No module named 'pkg_resources'
+
+=== uploading results (job status 1) (09:54:18)
+results uploaded to s3://georoute-splat-data-086341361260/pilot/s160-l100/20261118T095259Z/nerfstudio
+
