@@ -98,12 +98,11 @@ chown -R "$OWNER:$OWNER" "$WORK"
 
 log "nerfstudio environment"
 if [[ ! -x $NS_VENV/bin/ns-train ]]; then
-    CONDA=/home/ubuntu/miniconda3/bin/conda
-    [[ -x $CONDA ]] || CONDA=/home/ubuntu/miniforge3/bin/conda
-    [[ -x $CONDA ]] || { echo "conda not found under /home/ubuntu" >&2; exit 1; }
+    # The training instance has no conda: uv provides a managed Python 3.10 for this isolated venv.
     mkdir -p "$NS_ROOT"
     chown -R "$OWNER:$OWNER" "$NS_ROOT"
-    as_owner "$CONDA create -y -p $NS_VENV python=3.10 pip" 2>&1 | tee -a "$LOG"
+    as_owner "$ROOT/venv/bin/pip install -q uv==0.9.9" 2>&1 | tee -a "$LOG"
+    as_owner "$ROOT/venv/bin/uv venv --python 3.10 --python-preference only-managed --seed $NS_VENV" 2>&1 | tee -a "$LOG"
     as_owner "$NS_VENV/bin/pip install --upgrade pip wheel setuptools" 2>&1 | tee -a "$LOG"
     # torch 2.1.2 is the POC-era API line; cu121 wheels match the 12.x driver on the L4.
     as_owner "$NS_VENV/bin/pip install torch==2.1.2 torchvision==0.16.2 \
@@ -140,9 +139,6 @@ timeout --signal=TERM --kill-after=2m "${TRAIN_TIMEOUT_MIN}m" $NS_VENV/bin/ns-tr
     --data $NS_DATA \
     --max-num-iterations 30000 \
     --downscale_factor 2 \
-    --orientation_method none \
-    --center_method none \
-    --auto_scale_poses False \
     --viewer.quit-on-train-completion True \
     --vis tensorboard
 TRAIN
