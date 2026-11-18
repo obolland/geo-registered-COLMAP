@@ -123,7 +123,7 @@ if [[ ! -x $NS_VENV/bin/ns-train ]]; then
 else
     log "reusing $NS_VENV"
 fi
-as_owner "$NS_VENV/bin/python -c 'import torch, gsplat, nerfstudio, nerfacc; print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gsplat\", gsplat.__version__, \"nerfstudio\", nerfstudio.__version__, \"nerfacc\", nerfacc.__version__)'" 2>&1 | tee -a "$LOG"
+as_owner "$NS_VENV/bin/python -c 'import importlib.metadata, torch, gsplat, nerfstudio, nerfacc; print(\"torch\", torch.__version__, \"cuda\", torch.version.cuda, \"gsplat\", gsplat.__version__, \"nerfstudio\", importlib.metadata.version(\"nerfstudio\"), \"nerfacc\", nerfacc.__version__)'" 2>&1 | tee -a "$LOG"
 
 log "compile CUDA extensions for L4 (sm_89)"
 as_owner "export TORCH_CUDA_ARCH_LIST=8.9 TORCH_EXTENSIONS_DIR=$NS_ROOT/torch_extensions MAX_JOBS=8; \
