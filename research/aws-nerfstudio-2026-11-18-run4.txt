@@ -1,0 +1,7 @@
+
+=== space (12:50:16)
+/dev/root        151263856 131792716  19454756      88% /
+
+=== uploading results (job status 1) (12:50:16)
+results uploaded to s3://georoute-splat-data-086341361260/pilot/s160-l100/20261118T125016Z/nerfstudio
+

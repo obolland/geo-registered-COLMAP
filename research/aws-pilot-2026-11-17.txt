@@ -1,0 +1,26 @@
+
+=== space (08:12:20)
+/dev/root        151263856 62054544  89192928      42% /
+
+=== pull block blocks/s160-l100 (08:12:20)
+
+=== checking training dependencies (08:12:36)
+missing: ['torchvision', 'pycolmap', 'cv2', 'tyro', 'torchmetrics', 'nerfview', 'viser', 'sklearn', 'tensorboard', 'imageio', 'PIL', 'yaml', 'matplotlib']
+
+=== installing pinned example dependencies (08:12:36)
+No broken requirements found.
+torch 2.9.1+cu128 cuda 12.8 gpu NVIDIA L4
+gsplat 1.6.0 pycolmap 4.2.1 torchvision 0.24.1+cu128
+Downloading: "https://download.pytorch.org/models/alexnet-owt-7be5be79.pth" to /home/ubuntu/.cache/torch/hub/checkpoints/alexnet-owt-7be5be79.pth
+lpips preflight 0.0
+
+=== validate block (08:13:46)
+block ok: 660 train, 72 held-out, 263937 points
+
+=== prepare examples and explicit held-out split (08:13:47)
+explicit held-out split patched
+5k checkpoint defaults patched
+
+=== uploading results (job status 1) (08:13:53)
+results uploaded to s3://georoute-splat-data-086341361260/pilot/s160-l100/20261117T081219Z
+
