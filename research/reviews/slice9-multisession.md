@@ -30,13 +30,23 @@ are optional inputs.
   both kept. The held-out rule runs within each session. The manifest records per-session train and
   held-out counts and rigs. Single-session export is unchanged.
 - Auxiliary camera (step 6): `ingest --aux-folder cam4 --aux-camera 4 [--aux-clock-offset-s S]
-  [--aux-sigma-m 5]` orders the phone's photos by EXIF time, positions each from the session's antenna
-  track and gives it a loose prior. Its images carry `auxiliary: true` and `pulse: null`. They map as their
-  own COLMAP camera, are excluded from the hold-out rule and from the prior-residual gate, and train in
-  exported blocks. `aux-offset WORKSPACE --images IMAGES_JSON --session SESSION_DIR` estimates the clock
-  offset from registered auxiliary images by matching their reconstructed positions to the nearest antenna
-  track epoch. The workflow is: ingest with an approximate offset, map, run `aux-offset`, re-ingest with
-  the printed offset, map again.
+  [--aux-sigma-m 5] [--aux-utc-offset-s T]` orders the phone's photos by EXIF time, converts local EXIF
+  time to UTC with OffsetTimeOriginal (or the explicit timezone when the tag is absent), positions each
+  from the session's antenna track and gives it a loose prior. Its images carry `auxiliary: true` and
+  `pulse: null`, and that flag is recorded in priors.json so the report gate and export read it without
+  special cases. They map as their own COLMAP camera, are excluded from the hold-out rule and from the
+  prior-residual gate, and train in exported blocks. `aux-offset WORKSPACE --images IMAGES_JSON --session
+  SESSION_DIR` estimates the clock offset from registered auxiliary images by matching their reconstructed
+  camera centres to the nearest antenna track epoch, using `sparse/0` before refinement can pull aux poses
+  toward wrong priors. The workflow is: ingest with an approximate offset, map, run `aux-offset`,
+  re-ingest with the printed offset, map again.
+- `aux-offset` refuses when no auxiliary image has a verified match to a capture image: the initial offset
+  must place the priors within roughly 15 m of the track (about 10 s at riding speed). It also refuses a
+  p10-p90 spread above 2 s, which means the nearest-epoch fit is ambiguous where the route passes near
+  itself.
+- A photo outside the track is dropped with a warning naming it, rather than failing the whole ingest; the
+  ingest refuses only if none remain. A pulse subset includes auxiliary images whose time falls inside the
+  selected pulses' span.
 - Older `images.json` documents without receiver velocity (field test 2 session 2 is one) get a velocity
   derived from the antenna track for the rig heading.
 
@@ -73,6 +83,17 @@ because the two tracks were never closer than 22.8 m; the zero-count session pai
 `matching.json` as designed, so a pass that fails to connect is visible rather than looking like a clean
 run.
 
+## Review fixes (2026-11-19)
+
+The review's blockers and should-fix items are in. In particular: priors.json now records the auxiliary
+flag from prepare (single and multi), with an end-to-end test that takes the prepared record through
+`report` and `export_block`; EXIF OffsetTimeOriginal is parsed and local time converted to UTC, with a
+refusal naming the tag when neither the tag nor `--aux-utc-offset-s` is present; `aux-offset` reads
+`sparse/0`, matches prefixed multi-session names, refuses when no auxiliary-capture pair verified, and
+refuses an ambiguous spread; a single-session route build now filters pulse-less auxiliary images; prepare
+clears a stale multi-session overlay (`sessions.json`, `images/`, `rigs/`); and a pulse subset keeps
+auxiliary images inside the selected time span.
+
 ## Uncertainties
 
 - Cross-direction matching is still the risk the plan names. The real overlapping subset above gives the
@@ -81,14 +102,14 @@ run.
 - The auxiliary clock-offset estimate is a nearest-epoch fit against the antenna track. A route that
   passes close to itself can bias it; the printed p10/p90 spread makes that visible, and a user-supplied
   approximate offset narrows the search.
-- The auxiliary EXIF time is assumed to be UTC, its photos must be JPEG (video frames need extracting
-  first), and the rig must list the auxiliary camera so its geometry is known. iPhone HEIC images are not
-  read directly.
+- The auxiliary EXIF timezone comes from OffsetTimeOriginal; without it the user must pass the timezone.
+  Photos must be JPEG (video frames need extracting first), and the rig must list the auxiliary camera so
+  its geometry is known. iPhone HEIC images are not read directly.
 - The CUDA side is untouched; no GPU run was made.
 
 ## Tests
 
-486 tests pass (`pytest -q`), including the synthetic multi-session prepare, match, report, refine and
+498 tests pass (`pytest -q`), including the synthetic multi-session prepare, match, report, refine and
 export tests and the auxiliary-camera tests.
 
 Real-data commands run locally (no AWS): two prepares of 478 and 578 images and one 3.4 min spatial match.
