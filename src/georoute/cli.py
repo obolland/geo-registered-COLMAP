@@ -62,12 +62,28 @@ def build_parser() -> argparse.ArgumentParser:
     prep.add_argument("images_root", type=Path, help="the images folder ingest was run on")
     prep.add_argument("--rig", type=Path, required=True)
     prep.add_argument("--out", type=Path, required=True, help="workspace folder")
+    prep.add_argument(
+        "--session",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("IMAGES_JSON", "IMAGES_ROOT", "RIG_TOML"),
+        help="an additional capture session: its images.json, photo root and rig",
+    )
     prep.add_argument("--pulses", help="only pulses FIRST-LAST, for a quick subset")
     run = sub.add_parser("colmap-run", help="prepare, match, map, refine priors and report in one go")
     run.add_argument("images_json", type=Path)
     run.add_argument("images_root", type=Path)
     run.add_argument("--rig", type=Path, required=True)
     run.add_argument("--out", type=Path, required=True)
+    run.add_argument(
+        "--session",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("IMAGES_JSON", "IMAGES_ROOT", "RIG_TOML"),
+        help="an additional capture session: its images.json, photo root and rig",
+    )
     run.add_argument("--pulses", help="only pulses FIRST-LAST")
     run.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     run.epilog = "exit status: 0 report passes its gates, 1 refused or gates failed (see report.json)"
@@ -249,17 +265,24 @@ def _rig(args):
 
 
 def _colmap_prepare(args) -> int:
+    from georoute.multisession import load_session_spec, prepare_sessions
     from georoute.reconstruct import prepare
 
     try:
         pulses = _pulse_range(args.pulses)
-        summary = prepare(args.images_json, args.images_root, args.out, load_rig(args.rig), pulses)
+        if args.session:
+            specs = [load_session_spec(args.images_json, args.images_root, args.rig)]
+            specs += [load_session_spec(*extra) for extra in args.session]
+            summary = prepare_sessions(specs, args.out, pulses)
+        else:
+            summary = prepare(args.images_json, args.images_root, args.out, load_rig(args.rig), pulses)
     except (RigError, ValueError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
+    sessions = f"; sessions {', '.join(summary['sessions'])}" if summary.get("sessions") else ""
     print(
         f"{summary['images']} images, {summary['cameras']} cameras, {summary['priors']} priors "
-        f"(frame {summary['frame_id']}); workspace {args.out}"
+        f"(frame {summary['frame_id']}{sessions}); workspace {args.out}"
     )
     return 0
 

@@ -37,3 +37,28 @@ def test_colmap_map_parses():
 
     args = build_parser().parse_args(["colmap-map", "ws", "img", "--rig", "r.toml", "--mapper", "global"])
     assert args.command == "colmap-map" and args.mapper == "global"
+
+
+def test_colmap_prepare_parses_additional_sessions():
+    from georoute.cli import build_parser
+
+    args = build_parser().parse_args(
+        [
+            "colmap-prepare",
+            "s1/images.json",
+            "s1",
+            "--rig",
+            "s1.toml",
+            "--out",
+            "ws",
+            "--session",
+            "s2/images.json",
+            "s2",
+            "s2.toml",
+        ]
+    )
+    assert args.session == [["s2/images.json", "s2", "s2.toml"]]
+    assert (
+        build_parser().parse_args(["colmap-prepare", "i.json", "img", "--rig", "r", "--out", "w"]).session
+        == []
+    )

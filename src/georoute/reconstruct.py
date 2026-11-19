@@ -9,6 +9,7 @@ import numpy as np
 import pycolmap
 
 from georoute.colmap_report import GATES, gate, prior_residuals, rig_check, scale_against_priors
+from georoute.multisession import image_headings
 from georoute.rig import Rig, refine_priors
 
 # First-pass priors assume a level rig, so allow for the bike's lean and pitch moving the lever arm.
@@ -171,26 +172,69 @@ def match(workspace, max_neighbors: int = 30, max_distance_m: float = 15.0) -> d
     with pycolmap.Database.open(db_path) as db:
         images = {i.image_id: i.name for i in db.read_all_images()}
         pair_ids, geometries = db.read_two_view_geometries()
+    record = _prior_records(Path(workspace))
+    multi = len({r.get("session") for r in record.values() if r.get("session")}) > 1
     by_pair: dict[str, int] = {}
     connected = set()
+    by_session: dict[str, int] = {}
+    by_session_direction: dict[str, dict[str, int]] = {}
+    headings = image_headings(record) if multi else {}
     for pair_id, geometry in zip(pair_ids, geometries, strict=True):
         if len(geometry.inlier_matches) == 0:
             continue
         a, b = (images[i] for i in pycolmap.pair_id_to_image_pair(pair_id))
-        key = "-".join(sorted([a.split("/")[0], b.split("/")[0]]))
-        by_pair[key] = by_pair.get(key, 0) + 1
         connected |= {a, b}
+        if multi:
+            by_pair[_camera_pair_key(record, a, b)] = by_pair.get(_camera_pair_key(record, a, b), 0) + 1
+            sa, sb = record[a]["session"], record[b]["session"]
+            session_key = "-".join(sorted([sa, sb]))
+            by_session[session_key] = by_session.get(session_key, 0) + 1
+            if sa != sb:
+                direction = _pair_direction(headings.get(a), headings.get(b))
+                counts = by_session_direction.setdefault(
+                    session_key, {"same": 0, "opposite": 0, "unknown": 0}
+                )
+                counts[direction] += 1
+        else:
+            key = "-".join(sorted([a.split("/")[0], b.split("/")[0]]))
+            by_pair[key] = by_pair.get(key, 0) + 1
     report = {
         "verified_pairs": sum(by_pair.values()),
         "by_camera_pair": dict(sorted(by_pair.items())),
         "images_without_verified_pairs": sorted(set(images.values()) - connected),
     }
+    if multi:
+        report["by_session_pair"] = dict(sorted(by_session.items()))
+        report["by_session_pair_direction"] = dict(sorted(by_session_direction.items()))
     (Path(workspace) / "matching.json").write_text(json.dumps(report, indent=1))
     return report
 
 
 class ReconstructionError(RuntimeError):
     pass
+
+
+def _prior_records(workspace: Path) -> dict:
+    path = workspace / "priors.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _camera_pair_key(record: dict, a: str, b: str) -> str:
+    """A verified pair named by session and camera folder, because file numbers and camera folders repeat
+    between rides."""
+    left, right = sorted(
+        [
+            f"{record[a]['session']}/cam{record[a]['camera']}",
+            f"{record[b]['session']}/cam{record[b]['camera']}",
+        ]
+    )
+    return f"{left}-{right}"
+
+
+def _pair_direction(a, b) -> str:
+    if a is None or b is None:
+        return "unknown"
+    return "opposite" if float(np.dot(a, b)) < 0 else "same"
 
 
 def reconstruct(
