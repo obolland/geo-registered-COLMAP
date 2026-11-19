@@ -52,6 +52,12 @@ upload_results() {
 trap upload_results EXIT
 
 log "space"
+# Earlier runs' working folders (block copies, checkpoints, splats) fill the 150 GB disk (88% full on
+# 2026-11-18); their results are all in S3 (each job uploads on exit), so remove them. The venvs and the
+# compiled CUDA extensions are kept.
+du -sh "$ROOT"/nerfstudio-work/* "$ROOT"/pilot/runs 2>/dev/null || true
+find "$ROOT/nerfstudio-work" -mindepth 1 -maxdepth 1 -type d ! -name "$RUN_ID" -exec rm -rf {} + 2>/dev/null || true
+rm -rf "$ROOT/pilot/runs"
 mkdir -p "$WORK" "$DATA" "$NS_DATA" "$RESULTS"
 df -Pk "$WORK" | tail -n 1
 free_kb=$(df -Pk "$WORK" | awk 'NR==2 {print $4}')
