@@ -2,6 +2,10 @@
 
 Status: proposed 2026-11-19. Why: Olly's MVP decision (research/STATUS.md, "MVP capture decision") to capture the route in both directions and in overlapping stages, with re-aimed cameras and possibly an iPhone pointed at the road. Overlapping passes are reconstructed together so each patch of road is seen from both directions (this revises OUTPUT-DESIGN section 8, which only joined sessions at their ends). Evidence for the need: research/reviews/slice8-geometry-investigation.md (the near road is never seen from closer than about 3 m; road views are all grazing, from one direction).
 
+## Principle: an extension, not a new requirement (Olly, 2026-11-19)
+
+One rig and one pass stays a fully supported case: a single session is simply N = 1. Every existing command keeps working unchanged with one images.json, and the extra sessions and auxiliary cameras are optional inputs. Nothing assumes multiple passes. Image names gain a session prefix only when a workspace holds more than one session, so single-session workspaces, priors and outputs are unchanged. A regression check proves it: field test 2 session 1 run through the new code gives the same prepared workspace (images, priors, cameras) as today.
+
 ## Steps (each test-first, then an independent review)
 
 1. **Common frame.** A workspace frame (lat, lon, h, datum) chosen once per build, by default the first session's frame. Each session's images (antenna ECEF, priors, velocities) are re-expressed in it through ECEF; refuse sessions with different datums. Tests: two synthetic sessions with known frames give identical ENU positions for the same ECEF point.
@@ -15,6 +19,7 @@ Status: proposed 2026-11-19. Why: Olly's MVP decision (research/STATUS.md, "MVP 
 
 ## Done when
 
+- Single session unchanged: field test 2 session 1 prepares an identical workspace through the new code.
 - The ~100 m test stretch (re-aimed rig, return pass, optional iPhone) reconstructs as one model with all sessions registered and per-session prior residuals within the slice 6 gates.
 - Blocks export with images from every session and train through the existing job.
 - A comparison on the same stretch: single pass versus both directions (and with/without iPhone), on held-out scores and Olly's view of the road.
