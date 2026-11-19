@@ -9,10 +9,11 @@ from pathlib import Path
 import numpy as np
 
 from georoute import __version__
+from georoute.auxiliary import AuxiliaryInput, auxiliary_images
 from georoute.geodesy import LocalFrame, lla_to_ecef
 from georoute.photos import match_photos, read_photos
 from georoute.report import session_report
-from georoute.rig import Rig
+from georoute.rig import Rig, RigError
 from georoute.session import Session, load_session
 from georoute.trajectory import antenna_positions, exposure_mid
 
@@ -53,6 +54,7 @@ def ingest(
     rig: Rig | None = None,
     allow_unmeasured_rig: bool = False,
     camera_faults: set[int] | frozenset[int] = frozenset(),
+    aux: AuxiliaryInput | None = None,
 ) -> dict:
     """Writes report.json always (with the refusal reason if refused), and images.json and track.png only
     when every capture photo was timed and positioned."""
@@ -78,8 +80,45 @@ def ingest(
         if report["session"]["errors"]:
             raise IngestError("session integrity errors: " + "; ".join(report["session"]["errors"]))
         images, frame, summary = _position_captures(
-            session, images_root, curtain_travel_s, rig, frozenset(camera_faults)
+            session,
+            images_root,
+            curtain_travel_s,
+            rig,
+            frozenset(camera_faults),
+            exclude={aux.camera} if aux is not None else frozenset(),
         )
+        aux_summary = None
+        if aux is not None:
+            if aux.camera in {image["camera"] for image in images}:
+                raise IngestError(f"auxiliary camera {aux.camera} is also a capture camera")
+            if rig is not None:
+                try:
+                    rig.camera(aux.camera)
+                except RigError as e:
+                    raise IngestError(
+                        f"rig {rig.name} has no auxiliary camera {aux.camera}; add a [[camera]] entry"
+                    ) from e
+            extra, aux_warnings = auxiliary_images(session, images_root, frame, aux)
+            if any(image["path"].startswith(f"{aux.folder}/") for image in images):
+                raise IngestError(f"folder {aux.folder} already holds capture photos")
+            images += extra
+            aux_summary = {
+                "folder": aux.folder,
+                "camera": aux.camera,
+                "clock_offset_s": aux.clock_offset_s,
+                "sigma_m": aux.sigma_m,
+                "images": len(extra),
+                "without_prior": sum(not image["has_prior"] for image in extra),
+            }
+            summary["images"] += len(extra)
+            summary["per_camera"][f"cam{aux.camera}"] = len(extra)
+            summary["without_prior"] += aux_summary["without_prior"]
+            summary["serials_seen"][f"cam{aux.camera}"] = sorted(
+                {image["serial"] for image in extra if image["serial"]}
+            )
+            summary["warnings"] += aux_warnings
+            aux_summary["dropped"] = len(aux_warnings)
+            summary["auxiliary"] = aux_summary
     except Exception as e:
         report["refused"] = str(e)
         if out.is_dir():
@@ -87,33 +126,33 @@ def ingest(
         raise
     summary["rig_measured"] = rig.measured if rig else None
     report["ingest"] = summary
-    _write_json(
-        out / "images.json",
-        {
-            "schema": IMAGES_SCHEMA,
-            "georoute": __version__,
-            "generated_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "session": session.path.name,
-            "inputs": _input_hashes(session.path),
-            "datum": session.datum,
-            "base": report["session"]["base"],
-            "nav_period_s": session.nav_period_s,
-            "curtain_travel_s": curtain_travel_s,
-            "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured} if rig else None,
-            "serials_seen": summary["serials_seen"],
-            "camera_faults": sorted(camera_faults),
-            "coordinates": COORDINATES_NOTE,
-            "frame": {
-                "id": f"{session.path.name}/{'rtk-fixed' if summary['rtk_fixed'] else '3d-fix'}",
-                "lat_deg": frame.lat_deg,
-                "lon_deg": frame.lon_deg,
-                "h_m": frame.h_m,
-                "datum": frame.datum,
-                "origin_ecef": frame.origin_ecef.tolist(),
-            },
-            "images": images,
+    document = {
+        "schema": IMAGES_SCHEMA,
+        "georoute": __version__,
+        "generated_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "session": session.path.name,
+        "inputs": _input_hashes(session.path),
+        "datum": session.datum,
+        "base": report["session"]["base"],
+        "nav_period_s": session.nav_period_s,
+        "curtain_travel_s": curtain_travel_s,
+        "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured} if rig else None,
+        "serials_seen": summary["serials_seen"],
+        "camera_faults": sorted(camera_faults),
+        "coordinates": COORDINATES_NOTE,
+        "frame": {
+            "id": f"{session.path.name}/{'rtk-fixed' if summary['rtk_fixed'] else '3d-fix'}",
+            "lat_deg": frame.lat_deg,
+            "lon_deg": frame.lon_deg,
+            "h_m": frame.h_m,
+            "datum": frame.datum,
+            "origin_ecef": frame.origin_ecef.tolist(),
         },
-    )
+        "images": images,
+    }
+    if aux_summary is not None:
+        document["auxiliary"] = aux_summary
+    _write_json(out / "images.json", document)
     _write_json(out / "report.json", report)
     _plot(
         out / "track.png",
@@ -133,17 +172,27 @@ def _input_hashes(session_dir: Path) -> dict[str, str]:
 
 
 def _position_captures(
-    session: Session, images_root, curtain_travel_s: float, rig: Rig | None, camera_faults: frozenset[int]
+    session: Session,
+    images_root,
+    curtain_travel_s: float,
+    rig: Rig | None,
+    camera_faults: frozenset[int],
+    exclude: frozenset[int] = frozenset(),
 ):
     warnings: list[str] = []
-    photos, serials = photo_sources(images_root, rig, warnings)
+    photos, serials = photo_sources(images_root, rig, warnings, exclude)
     matches = match_photos(
-        session, photos, serials, warnings, faulty=camera_faults, camera_types=camera_types_for(session, rig)
+        session,
+        photos,
+        serials,
+        warnings,
+        faulty=camera_faults,
+        camera_types=camera_types_for(session, rig, exclude),
     )
     captures = [m for m in matches if m.pulse.kind == "capture"]
     if not captures:
         raise IngestError("no capture photos to position")
-    _check_cameras(session, captures, rig, warnings, camera_faults)
+    _check_cameras(session, captures, rig, warnings, camera_faults, exclude)
     delays = [m.pulse.delays_us[m.photo.camera] for m in captures]
     t_mid = np.array(
         [
@@ -209,15 +258,22 @@ def _position_captures(
 
 
 def _check_cameras(
-    session: Session, captures: list, rig: Rig | None, warnings: list[str], camera_faults: frozenset[int]
+    session: Session,
+    captures: list,
+    rig: Rig | None,
+    warnings: list[str],
+    camera_faults: frozenset[int],
+    exclude: frozenset[int] = frozenset(),
 ):
-    """Every rig camera must have exposed, and a camera that stopped well before the end is reported."""
+    """Every rig camera must have exposed, and a camera that stopped well before the end is reported.
+    exclude removes an auxiliary camera, which is positioned from the track instead of pulses."""
     used = {m.photo.camera for m in captures}
-    for camera in sorted(({c.index for c in rig.cameras} - used) & camera_faults) if rig else []:
+    expected = {c.index for c in rig.cameras} - set(exclude) if rig else set()
+    for camera in sorted((expected - used) & camera_faults):
         warnings.append(
             f"cam{camera} is in the rig but has no exposures in this session (acknowledged fault)"
         )
-    for camera in sorted({c.index for c in rig.cameras} - used - camera_faults) if rig else []:
+    for camera in sorted(expected - used - camera_faults):
         raise IngestError(f"cam{camera} is in the rig but has no exposures in this session")
     last_capture = max(p.n for p in session.pulses if p.kind == "capture")
     for camera in sorted(used):
@@ -228,20 +284,29 @@ def _check_cameras(
             )
 
 
-def camera_types_for(session: Session, rig: Rig | None) -> dict | None:
+def camera_types_for(session: Session, rig: Rig | None, exclude: frozenset[int] = frozenset()) -> dict | None:
     """Each camera's type: the rig's cameras as configured (all must be in the session), any other
-    session camera with the rig's defaults."""
+    session camera with the rig's defaults. exclude removes an auxiliary camera."""
     if rig is None:
         return None
-    return {c: rig.camera_type(c) for c in range(session.camera_count)} | rig.camera_types
+    types = {c: rig.camera_type(c) for c in range(session.camera_count)}
+    types |= {index: kind for index, kind in rig.camera_types.items() if index not in exclude}
+    return types
 
 
-def photo_sources(images_root, rig: Rig | None, warnings: list[str] | None = None):
-    """Photos per camera and the expected body serials, from the rig's folders when a rig is given."""
+def photo_sources(
+    images_root,
+    rig: Rig | None,
+    warnings: list[str] | None = None,
+    exclude: frozenset[int] = frozenset(),
+):
+    """Photos per camera and the expected body serials, from the rig's folders when a rig is given.
+    exclude keeps an auxiliary camera's folder out of the pulse-matched capture photos."""
     if rig is None:
-        return read_photos(images_root, warnings=warnings), None
-    folders = {c.index: c.folder for c in rig.cameras}
-    serials = {c.index: c.serial for c in rig.cameras if c.serial}
+        folders = {c: f"cam{c}" for c in range(64) if c not in exclude}
+        return read_photos(images_root, folders, warnings), None
+    folders = {c.index: c.folder for c in rig.cameras if c.index not in exclude}
+    serials = {c.index: c.serial for c in rig.cameras if c.serial and c.index not in exclude}
     return read_photos(images_root, folders, warnings), serials
 
 

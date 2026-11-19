@@ -268,6 +268,7 @@ New instance i-04f3833f3a68627d6 (g6.2xlarge, eu-west-2a, 150 GB gp3, tag Projec
 
 ## Ideas to research later (Olly, 2026-11-17)
 - Generative priors bolted onto real captures (diffusion-based splat repair and view synthesis such as NVIDIA Difix3D+, CAT3D, ViewCrafter; feed-forward depth/splat priors such as VGGT, MASt3R, AnySplat) to fix near geometry (road, hedges) from single-pass rig captures, after the slice 8 diagnosis.
+- Procedural worlds from open data (Olly, 2026-11-19): OpenAI's GPT-6.2 "Paris Atlas" demo had the model write a browser 3D Paris from street maps and French survey data on 131,000+ buildings (metric layout, not photoreal). Possible backbone for invented or semi-real routes (true road layout and gradients from map and elevation data) dressed with generated or captured scenery.
 - Invented routes: generated 3D worlds (World Labs Marble, Tencent HunyuanWorld) as an alternative or complement to real captures. Routes need not be real, provided they are beautiful, interesting, long enough and metrically scaled (or scalable). Questions: world size and stitching into 20-80 km routes, metric scale, export formats (splats, collision/road surface), consistency at riding speed, VR suitability, licence for commercial use, cost and API access.
 
 ## MVP capture decision (Olly, 2026-11-19)

@@ -33,20 +33,23 @@ class RoutePath:
     enu: np.ndarray
 
 
-def load_route_path(package) -> RoutePath:
-    """The published route path in one ENU frame, with segment-local samples converted through ECEF."""
+def load_route_path(package, frame: LocalFrame | None = None) -> RoutePath:
+    """The published route path in one ENU frame, with segment-local samples converted through ECEF.
+    frame, when given, is the workspace's common frame instead of the first segment's own frame."""
     package = Path(package)
     route = json.loads((package / "route.json").read_text())
+    if frame is not None and frame.datum != route["datum"]:
+        raise SplatExportError(f"route datum {route['datum']} and workspace frame {frame.datum} disagree")
     first_frame = None
     s_values, points = [], []
     for segment in route["segments"]:
         origin = segment["origin"]
-        frame = LocalFrame.at(origin["lat_deg"], origin["lon_deg"], origin["h_m"], route["datum"])
+        segment_frame = LocalFrame.at(origin["lat_deg"], origin["lon_deg"], origin["h_m"], route["datum"])
         if first_frame is None:
-            first_frame = frame
+            first_frame = frame or segment_frame
         samples = json.loads((package / segment["path"]).read_text())["samples"]
         local = np.array([[sample["e"], sample["n"], sample["u_road"]] for sample in samples])
-        common = first_frame.from_ecef(frame.to_ecef(local))
+        common = first_frame.from_ecef(segment_frame.to_ecef(local))
         s_values.append(np.array([sample["s"] for sample in samples]))
         points.append(common)
     s = np.concatenate(s_values)
@@ -61,7 +64,8 @@ def pulse_route_s(priors: dict, route: RoutePath) -> dict[int, float]:
     folded route can't snap back to an earlier branch."""
     centres = {}
     for record in priors.values():
-        centres.setdefault(int(record["pulse"]), []).append(np.asarray(record["centre"], float)[:2])
+        if record.get("pulse") is not None:
+            centres.setdefault(int(record["pulse"]), []).append(np.asarray(record["centre"], float)[:2])
     centres = {pulse: np.median(values, axis=0) for pulse, values in centres.items()}
     pulses = sorted(centres)
     if not pulses:
@@ -84,6 +88,23 @@ def pulse_route_s(priors: dict, route: RoutePath) -> dict[int, float]:
         result[pulse] = value
         last_s = value
     return result
+
+
+def route_in_record_frame(route: RoutePath, record: dict) -> RoutePath:
+    """The route path translated onto a single-session priors track, using the first capture pulse as
+    pulse_route_s does. Only needed when a single-session workspace carries auxiliary images, which have no
+    pulse to translate with."""
+    centres = {}
+    for item in record.values():
+        if item.get("pulse") is not None:
+            centres.setdefault(int(item["pulse"]), []).append(np.asarray(item["centre"], float)[:2])
+    if not centres:
+        raise SplatExportError("priors.json has no capture pulses to place the route against")
+    first = np.median(centres[min(centres)], axis=0)
+    translation = first - route.enu[0, :2]
+    enu = route.enu.copy()
+    enu[:, :2] += translation
+    return RoutePath(route.datum, route.s, enu)
 
 
 def select_pulses(pulse_s: dict[int, float], start: float, length: float, margin: float) -> list[int]:
@@ -109,9 +130,78 @@ def split_pulses(pulses: list[int], every: int = 10) -> tuple[list[int], list[in
     return [pulse for pulse in pulses if pulse not in set(heldout)], heldout
 
 
+def images_near_path(
+    record: dict, route: RoutePath, s_start: float, s_end: float, radius_m: float = 20.0
+) -> list[str]:
+    """Images whose camera centre lies within radius_m of the block's path. Unlike the single-session pulse
+    mapper this makes no monotonic assumption, so an opposite-direction or overlapping pass selects the
+    images that actually see the block."""
+    if not np.isfinite(radius_m) or radius_m <= 0:
+        raise SplatExportError(f"image radius must be positive, got {radius_m}")
+    if s_end <= s_start:
+        raise SplatExportError(f"block path range {s_start}..{s_end} is empty")
+    on_route = (route.s >= s_start) & (route.s <= s_end)
+    if not on_route.any():
+        raise SplatExportError(f"the route has no path between s={s_start:g} and s={s_end:g}")
+    tree = cKDTree(route.enu[on_route])
+    selected = []
+    for name, item in record.items():
+        distance = tree.query(np.asarray(item["centre"], float), k=1)[0]
+        if distance <= radius_m:
+            selected.append(name)
+    if not selected:
+        raise SplatExportError(f"no image lies within {radius_m:g} m of the block's path")
+    return sorted(selected)
+
+
+def select_images_near_path(
+    record: dict, route: RoutePath, s_start: float, s_end: float, radius_m: float = 20.0
+) -> dict[str, list[str]]:
+    """images_near_path grouped by session, refusing a record with no session."""
+    selected: dict[str, list[str]] = {}
+    for name in images_near_path(record, route, s_start, s_end, radius_m):
+        session = record[name].get("session")
+        if session is None:
+            raise SplatExportError(f"multi-session export needs a session for {name}")
+        selected.setdefault(session, []).append(name)
+    return {session: sorted(names) for session, names in sorted(selected.items())}
+
+
+def split_session_names(
+    record: dict, selected: dict[str, list[str]], every: int
+) -> tuple[list[str], list[str], dict[str, dict]]:
+    """Hold out every nth pulse within each session, then name the train and held-out images. A session
+    with capture pulses must contribute a held-out pulse, as for a single-session block; auxiliary images
+    have no pulses and train."""
+    train, heldout, by_session = [], [], {}
+    for session, names in selected.items():
+        pulsed = [name for name in names if record[name].get("pulse") is not None]
+        auxiliary = [name for name in names if record[name].get("pulse") is None]
+        if pulsed:
+            pulses = sorted({int(record[name]["pulse"]) for name in pulsed})
+            session_train, session_heldout = split_pulses(pulses, every)
+            heldout_set = set(session_heldout)
+            heldout += [name for name in pulsed if int(record[name]["pulse"]) in heldout_set]
+            train += [name for name in pulsed if int(record[name]["pulse"]) not in heldout_set]
+        else:
+            session_train, session_heldout = [], []
+        # An auxiliary camera has no pulses to hold out; its images train.
+        train += auxiliary
+        by_session[session] = {
+            "train_pulses": session_train,
+            "heldout_pulses": session_heldout,
+            "auxiliary_images": len(auxiliary),
+        }
+    return sorted(train), sorted(heldout), by_session
+
+
 def image_names_for_pulses(priors: dict, pulses: list[int]) -> list[str]:
     wanted = set(pulses)
-    return sorted(name for name, record in priors.items() if int(record["pulse"]) in wanted)
+    return sorted(
+        name
+        for name, record in priors.items()
+        if record.get("pulse") is not None and int(record["pulse"]) in wanted
+    )
 
 
 def heldout_images(priors: dict, heldout_pulses: list[int]) -> list[str]:
@@ -183,7 +273,7 @@ def export_block(
     workspace,
     images_root,
     route_package,
-    rig: Rig,
+    rig: Rig | None,
     out,
     block_start: float,
     block_length: float = 100.0,
@@ -192,8 +282,11 @@ def export_block(
     holdout_every: int = 10,
     point_radius_m: float = DEFAULT_POINT_RADIUS_M,
     block_id: str | None = None,
+    image_radius_m: float = 20.0,
 ) -> dict:
-    """Write a gsplat-style block: images/ and images_4/ plus sparse/0, heldout.json and manifest.json."""
+    """Write a gsplat-style block: images/ and images_4/ plus sparse/0, heldout.json and manifest.json.
+    A multi-session workspace selects images by distance to the block's path, all sessions, and holds out
+    every nth pulse within each session."""
     workspace = Path(workspace)
     images_root = Path(images_root)
     route_package = Path(route_package)
@@ -203,21 +296,59 @@ def export_block(
     final = out / block_id
     if final.exists():
         raise SplatExportError(f"block {final} already exists; never overwrite an exported block")
-    route = load_route_path(route_package)
     priors = json.loads((workspace / "priors.json").read_text())
-    pulse_s = pulse_route_s(priors, route)
-    selected_pulses = select_pulses(pulse_s, block_start, block_length, margin)
-    train_pulses, heldout_pulses = split_pulses(selected_pulses, holdout_every)
-    train_names = image_names_for_pulses(priors, train_pulses)
-    heldout_names = heldout_images(priors, heldout_pulses)
+    multi = any("session" in item for item in priors.values())
     model = pycolmap.Reconstruction(workspace / "sparse" / "refined")
-    centres = np.array(
-        [
-            np.asarray(record["centre"], float)
-            for record in priors.values()
-            if int(record["pulse"]) in set(selected_pulses)
-        ]
-    )
+    session_split = None
+    sessions_doc = None
+    if multi:
+        from georoute.multisession import load_sessions, session_frame_from
+
+        sessions_doc = load_sessions(workspace)
+        if sessions_doc is None:
+            raise SplatExportError(f"{workspace} has session-prefixed priors but no sessions.json")
+        route = load_route_path(route_package, session_frame_from(workspace))
+        selected = select_images_near_path(
+            priors,
+            route,
+            block_start - margin,
+            block_start + block_length + margin,
+            radius_m=image_radius_m,
+        )
+        train_names, heldout_names, session_split = split_session_names(priors, selected, holdout_every)
+        train_pulses = heldout_pulses = None
+        centres = np.array(
+            [np.asarray(priors[name]["centre"], float) for name in train_names + heldout_names]
+        )
+    else:
+        route = load_route_path(route_package)
+        pulse_s = pulse_route_s(priors, route)
+        selected_pulses = select_pulses(pulse_s, block_start, block_length, margin)
+        train_pulses, heldout_pulses = split_pulses(selected_pulses, holdout_every)
+        train_names = image_names_for_pulses(priors, train_pulses)
+        heldout_names = heldout_images(priors, heldout_pulses)
+        auxiliary_names = []
+        if any(item.get("auxiliary") for item in priors.values()):
+            # Auxiliary images have no pulse: place them by distance to the block's path instead.
+            near = images_near_path(
+                priors,
+                route_in_record_frame(route, priors),
+                block_start - margin,
+                block_start + block_length + margin,
+                radius_m=image_radius_m,
+            )
+            auxiliary_names = sorted(name for name in near if priors[name].get("auxiliary"))
+            train_names = sorted(train_names + auxiliary_names)
+        centres = np.array(
+            [
+                np.asarray(record["centre"], float)
+                for record in priors.values()
+                if record.get("pulse") is not None and int(record["pulse"]) in set(selected_pulses)
+            ]
+            + [np.asarray(priors[name]["centre"], float) for name in auxiliary_names]
+        ).reshape(-1, 3)
+    if not multi and rig is None:
+        raise SplatExportError("a single-session block needs a rig")
     subset, point_stats = build_subset_reconstruction(
         model,
         train_names + heldout_names,
@@ -263,6 +394,10 @@ def export_block(
             point_stats,
             staging,
             images_root,
+            session_split=session_split,
+            image_radius_m=image_radius_m,
+            sessions_doc=sessions_doc,
+            auxiliary_images=None if multi else len(auxiliary_names),
         )
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
         os.replace(staging, final)
@@ -313,9 +448,13 @@ def _manifest(
     point_stats,
     staging,
     images_root,
+    session_split=None,
+    image_radius_m=None,
+    sessions_doc=None,
+    auxiliary_images=None,
 ):
     route_files = [route_package / "route.json"] + sorted((route_package / "segments").glob("*/path.json"))
-    return {
+    manifest = {
         "schema": EXPORT_SCHEMA,
         "block": {
             "s_start": block_start,
@@ -347,8 +486,6 @@ def _manifest(
             "images_root": str(images_root),
             "priors_sha256": _sha256(workspace / "priors.json"),
             "route_sha256": {str(path.relative_to(route_package)): _sha256(path) for path in route_files},
-            "rig_name": rig.name,
-            "rig_sha256": rig.sha256,
         },
         "outputs": {
             "images": "images",
@@ -357,6 +494,35 @@ def _manifest(
             "heldout": "heldout.json",
         },
     }
+    if rig is not None:
+        manifest["inputs"]["rig_name"] = rig.name
+        manifest["inputs"]["rig_sha256"] = rig.sha256
+    if auxiliary_images is not None:
+        manifest["split"]["auxiliary"] = "every auxiliary image near the block trains (no pulses)"
+        manifest["counts"]["auxiliary_images"] = auxiliary_images
+    if session_split is not None:
+        manifest["split"] = {
+            "rule": f"every {holdout_every}th capture pulse within each session",
+            "by_session": session_split,
+        }
+        manifest["counts"]["per_session"] = {
+            label: {
+                "train_images": sum(name.startswith(f"{label}/") for name in train_names),
+                "heldout_images": sum(name.startswith(f"{label}/") for name in heldout_names),
+            }
+            for label in session_split
+        }
+        manifest["parameters"]["image_radius_m"] = image_radius_m
+        manifest["inputs"]["sessions_sha256"] = _sha256(workspace / "sessions.json")
+        manifest["inputs"]["sessions"] = [
+            {
+                "label": session["label"],
+                "rig_name": session["rig"]["name"],
+                "rig_sha256": session["rig"]["sha256"],
+            }
+            for session in (sessions_doc or {}).get("sessions", [])
+        ]
+    return manifest
 
 
 def _sha256(path: Path) -> str:

@@ -9,6 +9,7 @@ import numpy as np
 import pycolmap
 
 from georoute.colmap_report import GATES, gate, prior_residuals, rig_check, scale_against_priors
+from georoute.multisession import image_headings
 from georoute.rig import Rig, refine_priors
 
 # First-pass priors assume a level rig, so allow for the bike's lean and pitch moving the lever arm.
@@ -95,7 +96,7 @@ def prepare(
     type), SIFT features (CPU) and first-pass priors, plus priors.json recording them.
     pulses=(first, last) limits it to a subset."""
     data = json.loads(Path(images_json).read_text())
-    images = [i for i in data["images"] if pulses is None or pulses[0] <= i["pulse"] <= pulses[1]]
+    images = data["images"] if pulses is None else select_pulse_images(data["images"], pulses)
     if not images:
         raise ValueError("no images in the requested pulse range")
     workspace = Path(workspace)
@@ -103,9 +104,13 @@ def prepare(
     db_path = workspace / "database.db"
     for stale in ("", "-shm", "-wal"):
         Path(f"{db_path}{stale}").unlink(missing_ok=True)
-    for stale in ("priors.json", "matching.json", "mapping.json", "report.json"):
+    for stale in ("priors.json", "matching.json", "mapping.json", "report.json", "sessions.json"):
         (workspace / stale).unlink(missing_ok=True)
     shutil.rmtree(workspace / "sparse", ignore_errors=True)
+    if Path(images_root).resolve() == (workspace / "images").resolve():
+        raise ValueError(f"images root {images_root} is the workspace's own overlay; pass the photo folder")
+    shutil.rmtree(workspace / "images", ignore_errors=True)
+    shutil.rmtree(workspace / "rigs", ignore_errors=True)
 
     extraction = extraction_options(max_image_size)
     models = sorted({rig.camera_type(i["camera"]).colmap_model for i in images})
@@ -141,6 +146,7 @@ def prepare(
         name: {
             "camera": by_path[name]["camera"],
             "pulse": by_path[name]["pulse"],
+            **({"auxiliary": True} if by_path[name].get("auxiliary") else {}),
             "fixed": by_path[name]["carr_soln"] == 2 and "jump" not in by_path[name]["flags"],
             "antenna_enu": by_path[name]["antenna_enu"],
             "sigma_h_m": by_path[name]["prior_sigma_h_m"],
@@ -152,6 +158,25 @@ def prepare(
     }
     (workspace / "priors.json").write_text(json.dumps(record, indent=1))
     return summary
+
+
+def select_pulse_images(images: list[dict], pulses: tuple[int, int]) -> list[dict]:
+    """Capture images in the pulse range, plus auxiliary images whose time falls inside the selected
+    pulses' span. Auxiliary images have no pulse, so a time-span rule is the honest subset for them."""
+    captures = [
+        image
+        for image in images
+        if image.get("pulse") is not None and pulses[0] <= image["pulse"] <= pulses[1]
+    ]
+    auxiliary = [image for image in images if image.get("pulse") is None]
+    if not auxiliary:
+        return captures
+    times = [image["t_mid_gps_s"] for image in captures if "t_mid_gps_s" in image]
+    if not times:
+        return captures
+    low, high = min(times), max(times)
+    inside = [image for image in auxiliary if "t_mid_gps_s" in image and low <= image["t_mid_gps_s"] <= high]
+    return captures + inside
 
 
 def match(workspace, max_neighbors: int = 30, max_distance_m: float = 15.0) -> dict:
@@ -171,26 +196,79 @@ def match(workspace, max_neighbors: int = 30, max_distance_m: float = 15.0) -> d
     with pycolmap.Database.open(db_path) as db:
         images = {i.image_id: i.name for i in db.read_all_images()}
         pair_ids, geometries = db.read_two_view_geometries()
+    record = _prior_records(Path(workspace))
+    # A workspace prepared from several sessions keeps its session prefixes even if only one session
+    # contributes images to this run.
+    multi = any(r.get("session") for r in record.values())
     by_pair: dict[str, int] = {}
     connected = set()
+    by_session: dict[str, int] = {}
+    by_session_direction: dict[str, dict[str, int]] = {}
+    headings = image_headings(record) if multi else {}
     for pair_id, geometry in zip(pair_ids, geometries, strict=True):
         if len(geometry.inlier_matches) == 0:
             continue
         a, b = (images[i] for i in pycolmap.pair_id_to_image_pair(pair_id))
-        key = "-".join(sorted([a.split("/")[0], b.split("/")[0]]))
-        by_pair[key] = by_pair.get(key, 0) + 1
         connected |= {a, b}
+        if multi:
+            by_pair[_camera_pair_key(record, a, b)] = by_pair.get(_camera_pair_key(record, a, b), 0) + 1
+            sa, sb = record[a]["session"], record[b]["session"]
+            session_key = "-".join(sorted([sa, sb]))
+            by_session[session_key] = by_session.get(session_key, 0) + 1
+            if sa != sb:
+                direction = _pair_direction(headings.get(a), headings.get(b))
+                counts = by_session_direction.setdefault(
+                    session_key, {"same": 0, "opposite": 0, "unknown": 0}
+                )
+                counts[direction] += 1
+        else:
+            key = "-".join(sorted([a.split("/")[0], b.split("/")[0]]))
+            by_pair[key] = by_pair.get(key, 0) + 1
     report = {
         "verified_pairs": sum(by_pair.values()),
         "by_camera_pair": dict(sorted(by_pair.items())),
         "images_without_verified_pairs": sorted(set(images.values()) - connected),
     }
+    if multi:
+        labels = sorted({item["session"] for item in record.values() if item.get("session")})
+        for index, left in enumerate(labels):
+            for right in labels[index:]:
+                by_session.setdefault(f"{left}-{right}", 0)
+                if left != right:
+                    by_session_direction.setdefault(
+                        f"{left}-{right}", {"same": 0, "opposite": 0, "unknown": 0}
+                    )
+        report["by_session_pair"] = dict(sorted(by_session.items()))
+        report["by_session_pair_direction"] = dict(sorted(by_session_direction.items()))
     (Path(workspace) / "matching.json").write_text(json.dumps(report, indent=1))
     return report
 
 
 class ReconstructionError(RuntimeError):
     pass
+
+
+def _prior_records(workspace: Path) -> dict:
+    path = workspace / "priors.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _camera_pair_key(record: dict, a: str, b: str) -> str:
+    """A verified pair named by session and camera folder, because file numbers and camera folders repeat
+    between rides."""
+    left, right = sorted(
+        [
+            f"{record[a]['session']}/cam{record[a]['camera']}",
+            f"{record[b]['session']}/cam{record[b]['camera']}",
+        ]
+    )
+    return f"{left}-{right}"
+
+
+def _pair_direction(a, b) -> str:
+    if a is None or b is None:
+        return "unknown"
+    return "opposite" if float(np.dot(a, b)) < 0 else "same"
 
 
 def reconstruct(
@@ -250,9 +328,11 @@ def refine(
     min_lateral_spread_m: float = 1.0,
     max_points: int = MAX_REFINE_POINTS,
     holdout_every: int = 10,
+    rigs: dict[str, Rig] | None = None,
 ) -> dict:
     """Moves each prior from the nominal-attitude guess to the camera centre implied by the reconstructed
-    rotation and the rig geometry, re-adjusting the poses against the new priors until they settle. The
+    rotation and the rig geometry, re-adjusting the poses against the new priors until they settle. With
+    rigs, each image uses the rig of the session named in priors.json; otherwise every image uses rig. The
     adjustment runs on the max_points longest-tracked points; the refined poses then go back into the full
     model, whose points are re-adjusted with the poses held fixed. Writes sparse/refined, and updates
     priors.json and the database priors. Every holdout_every-th pulse is left out of the adjustment, so its
@@ -266,8 +346,20 @@ def refine(
     names = [n for n in record if n in ids]
     antenna = {n: (record[n]["camera"], np.array(record[n]["antenna_enu"])) for n in names}
     variances = {n: np.diag([record[n]["sigma_h_m"] ** 2] * 2 + [record[n]["sigma_v_m"] ** 2]) for n in names}
-    held_out = {n for n in names if holdout_every and record[n]["pulse"] % holdout_every == 0}
+    held_out = {
+        n
+        for n in names
+        if holdout_every and record[n].get("pulse") is not None and record[n]["pulse"] % holdout_every == 0
+    }
     used = [n for n in names if n not in held_out]
+
+    def rig_for(name: str) -> Rig:
+        session = record[name].get("session")
+        if rigs is None or session is None:
+            return rig
+        if session not in rigs:
+            raise ReconstructionError(f"no rig for session {session!r} (image {name})")
+        return rigs[session]
 
     def align(centres: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         _prior_bundle_adjustment(model, {ids[n]: (centres[n], variances[n]) for n in used})
@@ -280,6 +372,7 @@ def refine(
         tolerance_m=tolerance_m,
         min_lateral_spread_m=min_lateral_spread_m,
         initial={n: np.array(record[n]["centre"]) for n in names},
+        rig_for=rig_for if rigs is not None else None,
     )
     _prior_bundle_adjustment(model, {ids[n]: (result.priors[n], variances[n]) for n in used})
     for frame_id in model.reg_frame_ids():
@@ -361,10 +454,13 @@ def _prior_bundle_adjustment(
         raise ReconstructionError(f"prior bundle adjustment failed: {summary.brief_report()}")
 
 
-def report(workspace, rig: Rig, reference: int | None = None) -> dict:
+def report(workspace, rig: Rig, reference: int | None = None, rigs: dict[str, Rig] | None = None) -> dict:
     """report.json for the refined model (or the first one if not refined): mapping outcome, per-camera
     prior residuals on RTK-fixed images, the rig check and the gate failures. The reference camera
-    defaults to the rig's."""
+    defaults to the rig's. With rigs, residuals, rig checks and gates are reported per session, each
+    against its own rig."""
+    if rigs is not None:
+        return _report_sessions(Path(workspace), rigs)
     reference = rig.reference_camera if reference is None else reference
     workspace = Path(workspace)
     which, poses, centres, record, model = _model_poses(workspace)
@@ -396,10 +492,108 @@ def report(workspace, rig: Rig, reference: int | None = None) -> dict:
         "prior_residuals": residuals,
         "holdout_residuals": holdout,
         "rig_check": rig_result,
-        "failures": gate(holdout or residuals, rig_result, cameras),
+        "failures": gate(
+            holdout or residuals,
+            rig_result,
+            cameras,
+            frozenset(f"cam{r['camera']}" for r in record.values() if r.get("auxiliary")),
+        ),
     }
     (workspace / "report.json").write_text(json.dumps(out, indent=1))
     return out
+
+
+def _report_sessions(workspace: Path, rigs: dict[str, Rig]) -> dict:
+    """Per-session residuals and gates on the joint model. Each session's pulses repeat between rides, so
+    poses are rebuilt within the session and the session prefix is stripped from camera names."""
+    which, _, centres, record, model = _model_poses(workspace)
+    labels = {r.get("session") for r in record.values()}
+    if None in labels or not labels:
+        raise ReconstructionError("report per session needs a workspace prepared from sessions.json")
+    sessions = {}
+    failures = []
+    for label in sorted(set(rigs) | labels):
+        rig = rigs.get(label)
+        if rig is None:
+            failures.append(f"{label}: no rig config")
+            continue
+        names = [n for n, r in record.items() if r.get("session") == label]
+        if not names:
+            failures.append(f"{label}: no images in the model")
+            continue
+        reference = rig.reference_camera
+        priors = {n: np.array(record[n]["centre"]) for n in names}
+        held_out = {n for n in names if record[n].get("held_out")}
+        residuals = prior_residuals(
+            priors, centres, {n: record[n]["fixed"] and n not in held_out for n in names}, strip=f"{label}/"
+        )
+        holdout = (
+            prior_residuals(priors, centres, {n: record[n]["fixed"] for n in held_out}, strip=f"{label}/")
+            if held_out
+            else None
+        )
+        poses = _poses_for_session(model, record, label)
+        rig_result = rig_check(poses, rig, reference)
+        cameras = sorted({f"cam{r['camera']}" for r in record.values() if r.get("session") == label})
+        order = {n: record[n]["pulse"] for n in names}
+        session_failures = gate(
+            holdout or residuals,
+            rig_result,
+            cameras,
+            frozenset(
+                f"cam{r['camera']}"
+                for r in record.values()
+                if r.get("session") == label and r.get("auxiliary")
+            ),
+        )
+        failures += [f"{label}: {failure}" for failure in session_failures]
+        sessions[label] = {
+            "rig": {"name": rig.name, "sha256": rig.sha256, "measured": rig.measured},
+            "registration": {
+                c: {
+                    "photos": sum(n.startswith(f"{label}/{c}/") for n in record),
+                    "registered": sum(n.startswith(f"{label}/{c}/") for n in centres),
+                }
+                for c in cameras
+            },
+            "scale_against_rtk": scale_against_priors(
+                priors, centres, order, f"cam{reference}", prefix=f"{label}/"
+            ),
+            "prior_residuals": residuals,
+            "holdout_residuals": holdout,
+            "rig_check": rig_result,
+            "failures": session_failures,
+        }
+    out = {
+        "model": which,
+        "gates": GATES,
+        "mapping": json.loads((workspace / "mapping.json").read_text()),
+        "mean_reprojection_error_px": model.compute_mean_reprojection_error(),
+        "sessions": sessions,
+        "failures": failures,
+    }
+    (workspace / "report.json").write_text(json.dumps(out, indent=1))
+    return out
+
+
+def _poses_for_session(model: pycolmap.Reconstruction, record: dict, label: str, include_aux: bool = True):
+    poses = {}
+    for image_id in model.reg_image_ids():
+        image = model.images[image_id]
+        item = record.get(image.name)
+        if not item or item.get("session") != label:
+            continue
+        if item.get("pulse") is None:
+            if not include_aux:
+                continue
+            key = ("auxiliary", image.name)
+        else:
+            key = item["pulse"]
+        poses[(key, item["camera"])] = (
+            image.cam_from_world().rotation.matrix().T,
+            image.projection_center(),
+        )
+    return poses
 
 
 def _model_poses(workspace: Path):
@@ -415,18 +609,32 @@ def _model_poses(workspace: Path):
         centres[image.name] = centre
         if image.name in record:
             r = record[image.name]
-            poses[(r["pulse"], r["camera"])] = (image.cam_from_world().rotation.matrix().T, centre)
+            key = r["pulse"] if r["pulse"] is not None else ("auxiliary", image.name)
+            poses[(key, r["camera"])] = (image.cam_from_world().rotation.matrix().T, centre)
     return which, poses, centres, record, model
 
 
-def calibrate_rig(workspace, rig_path, out_path, reference: int | None = None) -> dict:
-    """Calibrated rig config from the workspace's reconstruction (see calibrate.py)."""
+def calibrate_rig(
+    workspace, rig_path, out_path, reference: int | None = None, session: str | None = None
+) -> dict:
+    """Calibrated rig config from the workspace's reconstruction (see calibrate.py). In a multi-session
+    workspace the session must be chosen, and only that session's images are used."""
     from georoute.calibrate import calibrate_rotations, with_orientations, write_calibrated_rig
     from georoute.rig import load_rig
 
     rig = load_rig(rig_path)
     reference = rig.reference_camera if reference is None else reference
-    _, poses, _, _, _ = _model_poses(Path(workspace))
+    _, poses, _, record, model = _model_poses(Path(workspace))
+    labels = {r.get("session") for r in record.values() if r.get("session")}
+    if session is not None:
+        if session not in labels:
+            raise ValueError(f"workspace has no session {session!r}; it holds {sorted(labels)}")
+        poses = _poses_for_session(model, record, session, include_aux=False)
+    elif len(labels) > 1:
+        raise ValueError(f"workspace holds sessions {sorted(labels)}; choose one with session")
+    if session is None:
+        # Auxiliary images have no pulse, so they can't share pulses with the reference camera.
+        poses = {key: value for key, value in poses.items() if not isinstance(key[0], tuple)}
     calibration = calibrate_rotations(poses, rig, reference)
     offset = rig_check(poses, with_orientations(rig, calibration), reference)["axial_offset_m"]
     write_calibrated_rig(rig_path, out_path, calibration, reference, offset, source=str(workspace))

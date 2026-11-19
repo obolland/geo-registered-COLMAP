@@ -56,18 +56,58 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--curtain-travel-ms", type=float, help="overrides the rig's value (default 0 without a rig)"
     )
+    run.add_argument(
+        "--aux-folder",
+        help="enable an unsynchronised auxiliary camera: its folder under images_root, named cam<N>",
+    )
+    run.add_argument("--aux-camera", type=int, default=4, metavar="N", help="index for the auxiliary camera")
+    run.add_argument(
+        "--aux-clock-offset-s",
+        type=float,
+        default=0.0,
+        help="seconds added to the camera's EXIF time to reach GPS time (estimate later with aux-offset)",
+    )
+    run.add_argument(
+        "--aux-utc-offset-s",
+        type=float,
+        default=None,
+        help="timezone when EXIF OffsetTimeOriginal is absent: local time = UTC + this, seconds",
+    )
+    run.add_argument(
+        "--aux-sigma-m",
+        type=float,
+        default=5.0,
+        metavar="METRES",
+        help="loose prior sigma for auxiliary photos until the clock offset is known",
+    )
     run.epilog = "exit status: 0 ok, 1 refused (integrity, matching or positioning), 2 session unreadable"
     prep = sub.add_parser("colmap-prepare", help="COLMAP workspace: features per camera and camera priors")
     prep.add_argument("images_json", type=Path, help="images.json from ingest")
     prep.add_argument("images_root", type=Path, help="the images folder ingest was run on")
     prep.add_argument("--rig", type=Path, required=True)
     prep.add_argument("--out", type=Path, required=True, help="workspace folder")
+    prep.add_argument(
+        "--session",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("IMAGES_JSON", "IMAGES_ROOT", "RIG_TOML"),
+        help="an additional capture session: its images.json, photo root and rig",
+    )
     prep.add_argument("--pulses", help="only pulses FIRST-LAST, for a quick subset")
     run = sub.add_parser("colmap-run", help="prepare, match, map, refine priors and report in one go")
     run.add_argument("images_json", type=Path)
     run.add_argument("images_root", type=Path)
     run.add_argument("--rig", type=Path, required=True)
     run.add_argument("--out", type=Path, required=True)
+    run.add_argument(
+        "--session",
+        nargs=3,
+        action="append",
+        default=[],
+        metavar=("IMAGES_JSON", "IMAGES_ROOT", "RIG_TOML"),
+        help="an additional capture session: its images.json, photo root and rig",
+    )
     run.add_argument("--pulses", help="only pulses FIRST-LAST")
     run.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     run.epilog = "exit status: 0 report passes its gates, 1 refused or gates failed (see report.json)"
@@ -76,14 +116,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     remap.add_argument("workspace", type=Path)
     remap.add_argument("images_root", type=Path)
-    remap.add_argument("--rig", type=Path, required=True)
+    remap.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
     remap.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     rep = sub.add_parser("colmap-report", help="re-check a workspace's reconstruction against priors and rig")
     rep.add_argument("workspace", type=Path)
-    rep.add_argument("--rig", type=Path, required=True)
+    rep.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
     cal = sub.add_parser("rig-calibrate", help="calibrated rig config from a workspace's reconstruction")
     cal.add_argument("workspace", type=Path)
-    cal.add_argument("--rig", type=Path, required=True)
+    cal.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
+    cal.add_argument("--session", help="session to calibrate in a multi-session workspace")
     cal.add_argument("--out", type=Path, required=True)
     rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
     rig.add_argument("rig_toml", type=Path)
@@ -97,9 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     route.epilog = "exit status: 0 all QA gates pass, 1 built with a failing segment, 2 refused"
     export = sub.add_parser("splat-export", help="export one splat training block from a refined workspace")
     export.add_argument("workspace", type=Path, help="COLMAP workspace with sparse/refined and priors.json")
-    export.add_argument("--images-root", type=Path, required=True, help="folder holding cam0..camN")
+    export.add_argument(
+        "--images-root",
+        type=Path,
+        help="folder holding cam0..camN (a multi-session workspace defaults to its own)",
+    )
     export.add_argument("--route", type=Path, required=True, help="published route package directory")
-    export.add_argument("--rig", type=Path, required=True)
+    export.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
     export.add_argument("--out", type=Path, required=True, help="folder for <block_id>")
     export.add_argument("--block-start", type=float, required=True, metavar="METRES")
     export.add_argument("--block-length", type=float, default=100.0, metavar="METRES")
@@ -107,8 +152,27 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--data-factor", type=int, default=4)
     export.add_argument("--holdout-every", type=int, default=10)
     export.add_argument("--point-radius", type=float, default=60.0, metavar="METRES")
+    export.add_argument(
+        "--image-radius",
+        type=float,
+        default=20.0,
+        metavar="METRES",
+        help="multi-session only: keep images within this distance of the block's path",
+    )
     export.add_argument("--block-id")
     export.epilog = "exit status: 0 exported, 1 refused or failed"
+    aux = sub.add_parser(
+        "aux-offset",
+        help="estimate an auxiliary camera's clock offset from a mapped workspace",
+        description=(
+            "The initial offset must place the auxiliary priors within roughly 15 m of the track, about "
+            "10 s at riding speed, or spatial matching cannot pair them with the capture images."
+        ),
+    )
+    aux.add_argument("workspace", type=Path, help="COLMAP workspace with the auxiliary images mapped")
+    aux.add_argument("--images", type=Path, required=True, help="the images.json that ingest wrote")
+    aux.add_argument("--session", type=Path, required=True, help="logger session with the antenna track")
+    aux.epilog = "re-ingest with --aux-clock-offset-s set to the printed offset, then map again"
     return parser
 
 
@@ -137,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
         return _route_build(args)
     if args.command == "splat-export":
         return _splat_export(args)
+    if args.command == "aux-offset":
+        return _aux_offset(args)
     parser.print_help()
     return 0
 
@@ -191,8 +257,21 @@ def _match(args) -> int:
 
 
 def _ingest(args) -> int:
+    from georoute.auxiliary import AuxiliaryError, AuxiliaryInput
+
     try:
         curtain = None if args.curtain_travel_ms is None else args.curtain_travel_ms / 1000
+        aux = (
+            AuxiliaryInput(
+                args.aux_folder,
+                args.aux_camera,
+                args.aux_clock_offset_s,
+                args.aux_sigma_m,
+                args.aux_utc_offset_s,
+            )
+            if args.aux_folder
+            else None
+        )
         summary = ingest(
             args.session_dir,
             args.images_root,
@@ -201,19 +280,25 @@ def _ingest(args) -> int:
             _rig(args),
             allow_unmeasured_rig=args.allow_unmeasured_rig,
             camera_faults=set(args.camera_fault),
+            aux=aux,
         )
     except SessionError as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 2
-    except (IngestError, MatchError, TrajectoryError, RigError, OSError) as e:
+    except (IngestError, AuxiliaryError, MatchError, TrajectoryError, RigError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     flagged = ", ".join(f"{k} {v}" for k, v in summary["flagged"].items())
     for warning in summary["warnings"]:
         print(f"WARNING {warning}", file=sys.stderr)
+    aux_text = (
+        f"; {summary['auxiliary']['images']} auxiliary photos on cam{summary['auxiliary']['camera']}"
+        if summary.get("auxiliary")
+        else ""
+    )
     print(
-        f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped); "
-        f"flagged: {flagged}; written to {args.out}"
+        f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped)"
+        f"{aux_text}; flagged: {flagged}; written to {args.out}"
     )
     return 0
 
@@ -249,17 +334,24 @@ def _rig(args):
 
 
 def _colmap_prepare(args) -> int:
+    from georoute.multisession import load_session_spec, prepare_sessions
     from georoute.reconstruct import prepare
 
     try:
         pulses = _pulse_range(args.pulses)
-        summary = prepare(args.images_json, args.images_root, args.out, load_rig(args.rig), pulses)
+        if args.session:
+            specs = [load_session_spec(args.images_json, args.images_root, args.rig)]
+            specs += [load_session_spec(*extra) for extra in args.session]
+            summary = prepare_sessions(specs, args.out, pulses)
+        else:
+            summary = prepare(args.images_json, args.images_root, args.out, load_rig(args.rig), pulses)
     except (RigError, ValueError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
+    sessions = f"; sessions {', '.join(summary['sessions'])}" if summary.get("sessions") else ""
     print(
         f"{summary['images']} images, {summary['cameras']} cameras, {summary['priors']} priors "
-        f"(frame {summary['frame_id']}); workspace {args.out}"
+        f"(frame {summary['frame_id']}{sessions}); workspace {args.out}"
     )
     return 0
 
@@ -270,7 +362,15 @@ def _colmap_run(args) -> int:
     try:
         pulses = _pulse_range(args.pulses)
         rig = load_rig(args.rig)
-        print("prepare:", prepare(args.images_json, args.images_root, args.out, rig, pulses), flush=True)
+        if args.session:
+            from georoute.multisession import load_session_spec, prepare_sessions
+
+            specs = [load_session_spec(args.images_json, args.images_root, args.rig)]
+            specs += [load_session_spec(*extra) for extra in args.session]
+            summary = prepare_sessions(specs, args.out, pulses)
+        else:
+            summary = prepare(args.images_json, args.images_root, args.out, rig, pulses)
+        print("prepare:", summary, flush=True)
         matched = match(args.out)
         print(
             f"match: {matched['verified_pairs']} verified pairs, "
@@ -285,19 +385,33 @@ def _colmap_run(args) -> int:
 
 def _colmap_map(args) -> int:
     try:
-        rig = load_rig(args.rig)
-    except RigError as e:
+        rig = load_rig(args.rig) if args.rig else None
+        _require_rig(args.workspace, rig)
+    except (RigError, ValueError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     return _map_refine_report(args.workspace, args.images_root, rig, args.mapper)
 
 
+def _require_rig(workspace, rig):
+    """A single-session workspace needs --rig; a multi-session one carries its session rigs."""
+    if rig is None:
+        from georoute.multisession import load_sessions
+
+        if load_sessions(workspace) is None:
+            raise RigError(f"{workspace} has no sessions.json; pass --rig")
+
+
 def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> int:
     import time
 
+    from georoute.multisession import rigs_from_sessions
     from georoute.reconstruct import ReconstructionError, reconstruct, refine, report
 
     try:
+        rigs = rigs_from_sessions(workspace)
+        if rigs is not None and rig is None:
+            rig = rigs[sorted(rigs)[0]]
         started = time.monotonic()
         mapped = reconstruct(workspace, images_root, mapper=mapper)
         print(
@@ -305,8 +419,8 @@ def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> 
             f"{(time.monotonic() - started) / 60:.1f} min",
             flush=True,
         )
-        print("refine:", refine(workspace, rig), flush=True)
-        result = report(workspace, rig)
+        print("refine:", refine(workspace, rig, rigs=rigs), flush=True)
+        result = report(workspace, rig, rigs=rigs)
     except (RigError, ValueError, OSError, KeyError, ReconstructionError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
@@ -318,10 +432,31 @@ def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> 
 
 def _rig_calibrate(args) -> int:
     from georoute.calibrate import CalibrationError
+    from georoute.multisession import load_sessions, rigs_from_sessions
     from georoute.reconstruct import calibrate_rig
 
     try:
-        result = calibrate_rig(args.workspace, args.rig, args.out)
+        sessions = load_sessions(args.workspace)
+        if sessions:
+            labels = [session["label"] for session in sessions["sessions"]]
+            label = args.session
+            if label is None:
+                if len(labels) != 1:
+                    raise RigError(f"choose --session from {labels}")
+                label = labels[0]
+            if label not in labels:
+                raise RigError(f"{args.workspace} has no session {label!r}; it holds {labels}")
+            rigs_from_sessions(args.workspace)
+            recorded = next(s for s in sessions["sessions"] if s["label"] == label)
+            result = calibrate_rig(
+                args.workspace, args.workspace / recorded["rig"]["path"], args.out, session=label
+            )
+        else:
+            if args.session:
+                raise RigError("--session needs a multi-session workspace")
+            if args.rig is None:
+                raise RigError("pass --rig")
+            result = calibrate_rig(args.workspace, args.rig, args.out)
     except (RigError, CalibrationError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
@@ -347,19 +482,28 @@ def _pulse_range(text: str | None) -> tuple[int, int] | None:
 
 
 def _colmap_report(args) -> int:
+    from georoute.multisession import rigs_from_sessions
     from georoute.reconstruct import report
 
     try:
-        result = report(args.workspace, load_rig(args.rig))
+        rig = load_rig(args.rig) if args.rig else None
+        _require_rig(args.workspace, rig)
+        rigs = rigs_from_sessions(args.workspace)
+        if rigs is not None and rig is None:
+            rig = rigs[sorted(rigs)[0]]
+        result = report(args.workspace, rig, rigs=rigs)
     except (RigError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
-    for camera, r in result["prior_residuals"].items():
-        if r["images"]:
-            print(
-                f"{camera}: prior residual p95 horizontal {r['horizontal_p95_m'] * 100:.1f} cm, "
-                f"vertical {r['vertical_p95_m'] * 100:.1f} cm over {r['images']} fixed photos"
-            )
+    sessions = result.get("sessions")
+    for label, block in sessions.items() if sessions else [(None, result)]:
+        prefix = f"{label}: " if label else ""
+        for camera, r in block["prior_residuals"].items():
+            if r["images"]:
+                print(
+                    f"{prefix}{camera}: prior residual p95 horizontal {r['horizontal_p95_m'] * 100:.1f} cm, "
+                    f"vertical {r['vertical_p95_m'] * 100:.1f} cm over {r['images']} fixed photos"
+                )
     for failure in result["failures"]:
         print(f"GATE {failure}", file=sys.stderr)
     print(f"report: {args.workspace / 'report.json'}")
@@ -402,16 +546,77 @@ def _route_build(args) -> int:
     return 1 if summary["status"] == "fail" else 0
 
 
+def _aux_offset(args) -> int:
+    import pycolmap
+
+    from georoute.auxiliary import (
+        AuxiliaryError,
+        auxiliary_matched_capture,
+        estimate_clock_offset,
+        find_auxiliary_entry,
+    )
+    from georoute.geodesy import lla_to_ecef
+    from georoute.multisession import doc_frame, load_sessions, session_frame_from
+    from georoute.session import load_session
+
+    try:
+        doc = json.loads(args.images.read_text())
+        entries = {image["path"]: image for image in doc["images"] if image.get("auxiliary")}
+        if not entries:
+            raise AuxiliaryError(f"{args.images} has no auxiliary photos")
+        frame = session_frame_from(args.workspace) if load_sessions(args.workspace) else doc_frame(doc)
+        session = load_session(args.session)
+        if session.datum != frame.datum:
+            raise AuxiliaryError(f"session datum {session.datum} and workspace frame {frame.datum} disagree")
+        if not auxiliary_matched_capture(args.workspace, entries):
+            raise AuxiliaryError(
+                "no auxiliary photo has a verified match to a capture image; the initial clock offset is "
+                "probably more than about 15 m of track (roughly 10 s at riding speed) out"
+            )
+        # sparse/0 is before refine moves auxiliary poses towards priors that may still carry the clock
+        # error; the mapper's own metric alignment is the honest basis for the offset.
+        model = pycolmap.Reconstruction(args.workspace / "sparse" / "0")
+        registered = {}
+        for image_id in model.reg_image_ids():
+            name = model.images[image_id].name
+            entry = find_auxiliary_entry(name, entries)
+            if entry is not None:
+                registered[name] = (model.images[image_id].projection_center(), entry["aux_raw_gps_s"])
+        if not registered:
+            raise AuxiliaryError("no auxiliary photo is registered; map the workspace first")
+        aux = registered
+        track = frame.from_ecef(lla_to_ecef(session.pvt.lat_deg, session.pvt.lon_deg, session.pvt.height_m))
+        result = estimate_clock_offset(aux, track, session.pvt.gps_time_s)
+    except (AuxiliaryError, OSError, ValueError, KeyError, RuntimeError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    print(
+        f"clock offset {result['offset_s']:+.3f} s from {result['images']} registered auxiliary photos "
+        f"(p10 {result['p10_s']:+.3f}, p90 {result['p90_s']:+.3f}); "
+        f"re-ingest with --aux-clock-offset-s {result['offset_s']:.3f}"
+    )
+    return 0
+
+
 def _splat_export(args) -> int:
+    from georoute.multisession import images_root_from_sessions, rigs_from_sessions
     from georoute.splat import SplatExportError, export_block
 
     try:
+        images_root = args.images_root or images_root_from_sessions(args.workspace)
+        if images_root is None:
+            raise SplatExportError("pass --images-root")
+        rig = load_rig(args.rig) if args.rig else None
+        rigs = rigs_from_sessions(args.workspace)
+        if rig is None and rigs is None:
+            raise SplatExportError("pass --rig")
+        rig = rig or rigs[sorted(rigs)[0]]
         print(f"exporting splat block from {args.workspace} ...", flush=True)
         result = export_block(
             args.workspace,
-            args.images_root,
+            images_root,
             args.route,
-            load_rig(args.rig),
+            rig,
             args.out,
             args.block_start,
             block_length=args.block_length,
@@ -420,6 +625,7 @@ def _splat_export(args) -> int:
             holdout_every=args.holdout_every,
             point_radius_m=args.point_radius,
             block_id=args.block_id,
+            image_radius_m=args.image_radius,
         )
     except (SplatExportError, RigError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)

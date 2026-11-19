@@ -397,3 +397,60 @@ def test_prepare_uses_each_cameras_colmap_model(tmp_path):
     with pycolmap.Database.open(tmp_path / "ws" / "database.db") as db:
         models = {db.read_camera(i.camera_id).model for i in db.read_all_images()}
     assert models == {pycolmap.CameraModelId.OPENCV, pycolmap.CameraModelId.OPENCV_FISHEYE}
+
+
+def test_refine_does_not_hold_out_an_auxiliary_image_without_a_pulse(tmp_path):
+    import json
+
+    from georoute.reconstruct import refine
+    from georoute.rig import Camera, Rig
+
+    truth = _synthetic_workspace(tmp_path)
+    (tmp_path / "ws" / "sparse" / "0").mkdir(parents=True)
+    truth.write(tmp_path / "ws" / "sparse" / "0")
+    rig = Rig(
+        "synthetic",
+        True,
+        (Camera(0, "", "cam0", None, np.array([0.0, 0.0, 0.0]), (0.0, 0.0, 0.0)),),
+        np.array([0.0, 0.0, 0.0]),
+        1.0,
+        0.0,
+        "x",
+    )
+    record = {}
+    for k, image in enumerate(truth.images.values()):
+        world_from_cam = image.cam_from_world().rotation.matrix().T
+        world_from_rig = world_from_cam @ rig.rig_from_camera(0).T
+        antenna = image.projection_center() - world_from_rig @ rig.camera(0).position_in_rig_m
+        record[image.name] = {
+            "camera": 0,
+            "pulse": None if k == 0 else k,
+            "antenna_enu": antenna.tolist(),
+            "sigma_h_m": 0.01,
+            "sigma_v_m": 0.01,
+            "centre": antenna.tolist(),
+            "covariance": (np.eye(3) * 1e-4).tolist(),
+        }
+    (tmp_path / "ws" / "priors.json").write_text(json.dumps(record))
+    result = refine(tmp_path / "ws", rig, min_lateral_spread_m=0.0, holdout_every=10)
+    assert result["images"] == len(record)
+    assert result["held_out"] == sum(
+        1 for r in record.values() if r["pulse"] is not None and r["pulse"] % 10 == 0
+    )
+
+
+def test_prepare_removes_a_stale_multi_session_overlay(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    ws = tmp_path / "ws"
+    (ws / "images" / "s1").mkdir(parents=True)
+    (ws / "rigs").mkdir()
+    (ws / "sessions.json").write_text("{}")
+    prepare(tmp_path / "images.json", tmp_path / "images", ws, rig)
+    assert not (ws / "sessions.json").exists()
+    assert not (ws / "images").exists() and not (ws / "rigs").exists()

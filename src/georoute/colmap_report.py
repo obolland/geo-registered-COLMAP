@@ -6,13 +6,19 @@ from georoute.rig import Rig
 
 
 def prior_residuals(
-    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], fixed: dict[str, bool]
+    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], fixed: dict[str, bool], strip: str = ""
 ) -> dict[str, dict]:
-    """Reconstructed minus prior camera centre, per camera folder, over RTK-fixed images only."""
+    """Reconstructed minus prior camera centre, per camera folder, over RTK-fixed images only. strip
+    removes a session prefix, so a multi-session workspace is reported per camera folder within a session."""
+    view = {name[len(strip) :]: name for name in priors if name.startswith(strip)}
     out: dict[str, dict] = {}
-    for camera in sorted({name.split("/")[0] for name in priors}):
-        names = [n for n in priors if n.startswith(f"{camera}/") and n in centres and fixed.get(n)]
-        d = np.array([centres[n] - priors[n] for n in names]).reshape(-1, 3)
+    for camera in sorted({name.split("/")[0] for name in view}):
+        names = [
+            n
+            for n, full in view.items()
+            if n.startswith(f"{camera}/") and full in centres and fixed.get(full)
+        ]
+        d = np.array([centres[view[n]] - priors[view[n]] for n in names]).reshape(-1, 3)
         h, v = np.hypot(d[:, 0], d[:, 1]), np.abs(d[:, 2])
         stats = {"images": len(names)}
         for label, values in (("horizontal", h), ("vertical", v)):
@@ -69,12 +75,20 @@ GATES = {"prior_p95_m": 0.05, "rig_translation_m": 0.02, "rig_angle_deg": 2.0}
 MIN_RIG_PULSES = 10
 
 
-def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) -> list[str]:
+def gate(
+    residuals: dict,
+    rig: dict,
+    expected_cameras: list[str] | None = None,
+    auxiliary_cameras: frozenset[str] = frozenset(),
+) -> list[str]:
     """Reasons the reconstruction fails its gates (empty when it passes). A camera with nothing to check
-    fails rather than passing by default."""
+    fails rather than passing by default. Auxiliary cameras are exempt from the prior-residual gate: their
+    clock offset and mounting are loose by design, so only registration is required of them."""
     failures = [f"{c} has no registered images" for c in expected_cameras or [] if c not in residuals]
     failures += [
-        f"{c} has no RTK-fixed images to check against" for c, r in residuals.items() if not r.get("images")
+        f"{c} has no RTK-fixed images to check against"
+        for c, r in residuals.items()
+        if not r.get("images") and c not in auxiliary_cameras
     ]
     failures += [
         f"{c} shares only {r['pulses']} pulses with {rig.get('reference', 'the reference')}"
@@ -82,6 +96,8 @@ def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) 
         if r["pulses"] < MIN_RIG_PULSES
     ]
     for camera, r in residuals.items():
+        if camera in auxiliary_cameras:
+            continue
         for axis in ("horizontal", "vertical"):
             value = r.get(f"{axis}_p95_m")
             if value is not None and value > GATES["prior_p95_m"]:
@@ -98,10 +114,14 @@ def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) 
 
 
 def scale_against_priors(
-    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], order: dict[str, int], camera: str
+    priors: dict[str, np.ndarray],
+    centres: dict[str, np.ndarray],
+    order: dict[str, int],
+    camera: str,
+    prefix: str = "",
 ) -> float | None:
     """Reconstructed path length over the prior path length, along one camera's photos in pulse order."""
-    names = sorted((n for n in priors if n.startswith(f"{camera}/") and n in centres), key=order.get)
+    names = sorted((n for n in priors if n.startswith(f"{prefix}{camera}/") and n in centres), key=order.get)
     if len(names) < 2:
         return None
     prior_length = sum(np.linalg.norm(priors[b] - priors[a]) for a, b in zip(names, names[1:], strict=False))

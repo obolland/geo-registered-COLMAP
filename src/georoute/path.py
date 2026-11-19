@@ -664,6 +664,8 @@ def _image_quality(images) -> dict[int, tuple[str, ...]]:
     """Worst RTK solution and any time recovery at each capture pulse, from the ingest record."""
     by_pulse: dict[int, dict] = {}
     for image in images:
+        if image.get("pulse") is None:
+            continue
         state = by_pulse.setdefault(int(image["pulse"]), {"carr": 2, "time": False})
         state["carr"] = min(state["carr"], int(image["carr_soln"]))
         state["time"] = state["time"] or "time-recovered" in image.get("flags", ())
@@ -690,6 +692,8 @@ def _nearest(trace_s, s):
 def _pulse_times(images) -> dict[int, float]:
     times: dict[int, list[float]] = {}
     for image in images:
+        if image.get("pulse") is None:
+            continue
         times.setdefault(image["pulse"], []).append(float(image["t_mid_gps_s"]))
     return {pulse: float(np.median(t)) for pulse, t in times.items()}
 
