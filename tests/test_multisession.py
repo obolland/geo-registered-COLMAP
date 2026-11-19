@@ -394,4 +394,4 @@ def test_multi_session_prepare_records_the_auxiliary_flag(tmp_path):
     prepare_sessions([one, two], tmp_path / "ws")
     record = json.loads((tmp_path / "ws" / "priors.json").read_text())
     assert record["s1/cam4/IMG_0001.JPG"]["auxiliary"] is True
-    assert record["s1/cam0/IMG_0002.JPG"]["auxiliary"] is False
+    assert "auxiliary" not in record["s1/cam0/IMG_0002.JPG"]  # capture records stay as before slice 9

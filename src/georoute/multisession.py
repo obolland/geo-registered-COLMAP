@@ -239,7 +239,7 @@ def prepare_sessions(
             "session": spec.label,
             "camera": image["camera"],
             "pulse": image["pulse"],
-            "auxiliary": bool(image.get("auxiliary")),
+            **({"auxiliary": True} if image.get("auxiliary") else {}),
             "fixed": image["carr_soln"] == 2 and "jump" not in image["flags"],
             "antenna_enu": image["antenna_enu"],
             "sigma_h_m": image["prior_sigma_h_m"],

@@ -146,7 +146,7 @@ def prepare(
         name: {
             "camera": by_path[name]["camera"],
             "pulse": by_path[name]["pulse"],
-            "auxiliary": bool(by_path[name].get("auxiliary")),
+            **({"auxiliary": True} if by_path[name].get("auxiliary") else {}),
             "fixed": by_path[name]["carr_soln"] == 2 and "jump" not in by_path[name]["flags"],
             "antenna_enu": by_path[name]["antenna_enu"],
             "sigma_h_m": by_path[name]["prior_sigma_h_m"],

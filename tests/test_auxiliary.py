@@ -181,7 +181,7 @@ def test_prepare_maps_auxiliary_images_into_their_own_camera(session_dir, tmp_pa
     assert record["cam4/IMG_0001.JPG"]["pulse"] is None
     assert record["cam4/IMG_0001.JPG"]["centre"]
     assert record["cam4/IMG_0001.JPG"]["auxiliary"] is True
-    assert record["cam0/IMG_0408.JPG"]["auxiliary"] is False
+    assert "auxiliary" not in record["cam0/IMG_0408.JPG"]  # capture records stay as before slice 9
     with pycolmap.Database.open(tmp_path / "ws" / "database.db") as db:
         folders = {image.name.split("/")[0] for image in db.read_all_images()}
     assert folders == {"cam0", "cam4"}
