@@ -33,8 +33,8 @@ are optional inputs.
   [--aux-sigma-m 5] [--aux-utc-offset-s T]` orders the phone's photos by EXIF time, converts local EXIF
   time to UTC with OffsetTimeOriginal (or the explicit timezone when the tag is absent), positions each
   from the session's antenna track and gives it a loose prior. Its images carry `auxiliary: true` and
-  `pulse: null`, and that flag is recorded in priors.json so the report gate and export read it without
-  special cases. They map as their own COLMAP camera, are excluded from the hold-out rule and from the
+  `pulse: null`; priors.json records the flag only on those images (commit 12d2032), so capture-only
+  priors stay byte-identical to pre-slice-9 and readers use `.get`. They map as their own COLMAP camera, are excluded from the hold-out rule and from the
   prior-residual gate, and train in exported blocks. `aux-offset WORKSPACE --images IMAGES_JSON --session
   SESSION_DIR` estimates the clock offset from registered auxiliary images by matching their reconstructed
   camera centres to the nearest antenna track epoch, using `sparse/0` before refinement can pull aux poses
@@ -59,6 +59,9 @@ slice 9) and by `prepare_sessions` through the new code.
 - `priors.json` byte-identical (`cmp` clean).
 - Image names identical; camera partition identical (one camera per folder, four cameras, all OPENCV).
 
+Rerun on 2026-11-19 after commit 12d2032 (the auxiliary flag is now written only on auxiliary images):
+still byte-identical, with the same names and four-camera partition.
+
 The historical full workspace `~/fieldtest2/colmap/s1` (prepared 2026-11-15, 2464 images) matches the
 current image list exactly (0 missing, 0 extra) and the same four-camera folder partition. Its priors
 differ from today's by 2.0 cm median: that workspace predates the 16 November rig recalibration, so it is
@@ -70,24 +73,25 @@ Field test 2 session 1 (pulses 40-125, 344 photos) and session 2 (234 photos) pr
 578 images, 7 cameras (session 1 has four folders; session 2 lost cam1 to its acknowledged fault), one
 common ETRS89 frame, each session's rig copied into `workspace/rigs/`.
 
-Matched with `max_neighbors=20, max_distance_m=10`: 5365 verified pairs, 2657 within session 1, 1187
-within session 2 and 1521 cross-session. Every cross-session pair is same-direction (0 opposite, 0
+Matched with `max_neighbors=20, max_distance_m=10` on 2026-11-19 after commit 12d2032: 5362 verified
+pairs, 2658 within session 1, 1187 within session 2 and 1517 cross-session. Every cross-session pair is same-direction (0 opposite, 0
 unknown) because both rides here ran the same way; opposite directions wait for the test stretch. No image
 was left without a verified pair. Cross-session pairs cover the side and forward cameras, for example
-session 1 cam2 with session 2 cam0 (247), session 1 cam3 with session 2 cam2 (241) and session 1 cam2 with
+session 1 cam2 with session 2 cam0 (247), session 1 cam3 with session 2 cam2 (240) and session 1 cam2 with
 session 2 cam2 (206). The common frame is what makes this work: session 2's camera centres lie 0.34 m
 (minimum) and 1.34 m (median) from the full session 1 track.
 
-A first attempt with a non-overlapping slice (session 1 pulses 150-210) produced 0 cross-session pairs
+An earlier run of the same slice gave 5365 verified pairs and 1521 cross-session; threaded SIFT matching
+moves the count by a few pairs. A first attempt with a non-overlapping slice (session 1 pulses 150-210) produced 0 cross-session pairs
 because the two tracks were never closer than 22.8 m; the zero-count session pair appears in
 `matching.json` as designed, so a pass that fails to connect is visible rather than looking like a clean
 run.
 
 ## Review fixes (2026-11-19)
 
-The review's blockers and should-fix items are in. In particular: priors.json now records the auxiliary
-flag from prepare (single and multi), with an end-to-end test that takes the prepared record through
-`report` and `export_block`; EXIF OffsetTimeOriginal is parsed and local time converted to UTC, with a
+The review's blockers and should-fix items are in. In particular: priors.json records the auxiliary
+flag only on auxiliary images from prepare (single and multi), with an end-to-end test that takes the
+prepared record through `report` and `export_block`; EXIF OffsetTimeOriginal is parsed and local time converted to UTC, with a
 refusal naming the tag when neither the tag nor `--aux-utc-offset-s` is present; `aux-offset` reads
 `sparse/0`, matches prefixed multi-session names, refuses when no auxiliary-capture pair verified, and
 refuses an ambiguous spread; a single-session route build now filters pulse-less auxiliary images; prepare
