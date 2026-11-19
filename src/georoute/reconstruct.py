@@ -96,9 +96,7 @@ def prepare(
     type), SIFT features (CPU) and first-pass priors, plus priors.json recording them.
     pulses=(first, last) limits it to a subset."""
     data = json.loads(Path(images_json).read_text())
-    images = data["images"]
-    if pulses is not None:
-        images = [i for i in images if i.get("pulse") is not None and pulses[0] <= i["pulse"] <= pulses[1]]
+    images = data["images"] if pulses is None else select_pulse_images(data["images"], pulses)
     if not images:
         raise ValueError("no images in the requested pulse range")
     workspace = Path(workspace)
@@ -106,9 +104,13 @@ def prepare(
     db_path = workspace / "database.db"
     for stale in ("", "-shm", "-wal"):
         Path(f"{db_path}{stale}").unlink(missing_ok=True)
-    for stale in ("priors.json", "matching.json", "mapping.json", "report.json"):
+    for stale in ("priors.json", "matching.json", "mapping.json", "report.json", "sessions.json"):
         (workspace / stale).unlink(missing_ok=True)
     shutil.rmtree(workspace / "sparse", ignore_errors=True)
+    if Path(images_root).resolve() == (workspace / "images").resolve():
+        raise ValueError(f"images root {images_root} is the workspace's own overlay; pass the photo folder")
+    shutil.rmtree(workspace / "images", ignore_errors=True)
+    shutil.rmtree(workspace / "rigs", ignore_errors=True)
 
     extraction = extraction_options(max_image_size)
     models = sorted({rig.camera_type(i["camera"]).colmap_model for i in images})
@@ -144,6 +146,7 @@ def prepare(
         name: {
             "camera": by_path[name]["camera"],
             "pulse": by_path[name]["pulse"],
+            "auxiliary": bool(by_path[name].get("auxiliary")),
             "fixed": by_path[name]["carr_soln"] == 2 and "jump" not in by_path[name]["flags"],
             "antenna_enu": by_path[name]["antenna_enu"],
             "sigma_h_m": by_path[name]["prior_sigma_h_m"],
@@ -155,6 +158,25 @@ def prepare(
     }
     (workspace / "priors.json").write_text(json.dumps(record, indent=1))
     return summary
+
+
+def select_pulse_images(images: list[dict], pulses: tuple[int, int]) -> list[dict]:
+    """Capture images in the pulse range, plus auxiliary images whose time falls inside the selected
+    pulses' span. Auxiliary images have no pulse, so a time-span rule is the honest subset for them."""
+    captures = [
+        image
+        for image in images
+        if image.get("pulse") is not None and pulses[0] <= image["pulse"] <= pulses[1]
+    ]
+    auxiliary = [image for image in images if image.get("pulse") is None]
+    if not auxiliary:
+        return captures
+    times = [image["t_mid_gps_s"] for image in captures if "t_mid_gps_s" in image]
+    if not times:
+        return captures
+    low, high = min(times), max(times)
+    inside = [image for image in auxiliary if "t_mid_gps_s" in image and low <= image["t_mid_gps_s"] <= high]
+    return captures + inside
 
 
 def match(workspace, max_neighbors: int = 30, max_distance_m: float = 15.0) -> dict:

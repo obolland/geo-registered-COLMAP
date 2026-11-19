@@ -98,7 +98,7 @@ def ingest(
                     raise IngestError(
                         f"rig {rig.name} has no auxiliary camera {aux.camera}; add a [[camera]] entry"
                     ) from e
-            extra = auxiliary_images(session, images_root, frame, aux)
+            extra, aux_warnings = auxiliary_images(session, images_root, frame, aux)
             if any(image["path"].startswith(f"{aux.folder}/") for image in images):
                 raise IngestError(f"folder {aux.folder} already holds capture photos")
             images += extra
@@ -116,6 +116,8 @@ def ingest(
             summary["serials_seen"][f"cam{aux.camera}"] = sorted(
                 {image["serial"] for image in extra if image["serial"]}
             )
+            summary["warnings"] += aux_warnings
+            aux_summary["dropped"] = len(aux_warnings)
             summary["auxiliary"] = aux_summary
     except Exception as e:
         report["refused"] = str(e)

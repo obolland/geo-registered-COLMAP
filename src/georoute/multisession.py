@@ -173,9 +173,9 @@ def prepare_sessions(
     for spec, doc in zip(specs, docs, strict=True):
         images = images_in_frame(doc, frame)
         if pulses is not None:
-            images = [
-                i for i in images if i.get("pulse") is not None and pulses[0] <= i["pulse"] <= pulses[1]
-            ]
+            from georoute.reconstruct import select_pulse_images
+
+            images = select_pulse_images(images, pulses)
         for image in images:
             name = session_image_name(spec.label, image["path"])
             source = spec.images_root / image["path"]
@@ -239,6 +239,7 @@ def prepare_sessions(
             "session": spec.label,
             "camera": image["camera"],
             "pulse": image["pulse"],
+            "auxiliary": bool(image.get("auxiliary")),
             "fixed": image["carr_soln"] == 2 and "jump" not in image["flags"],
             "antenna_enu": image["antenna_enu"],
             "sigma_h_m": image["prior_sigma_h_m"],

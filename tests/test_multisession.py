@@ -360,3 +360,38 @@ def test_a_session_pair_that_fails_to_connect_is_reported_as_zero(tmp_path):
     report = match(tmp_path / "ws", max_neighbors=10, max_distance_m=50)
     assert report["by_session_pair"]["s1-s2"] == 0
     assert report["by_session_pair_direction"]["s1-s2"] == {"same": 0, "opposite": 0, "unknown": 0}
+
+
+def test_multi_session_prepare_records_the_auxiliary_flag(tmp_path):
+    from dataclasses import replace
+
+    from georoute.rig import Camera
+
+    f1 = LocalFrame.at(51.15875, -4.12440, 208.0, "ETRS89")
+    one = _spec(tmp_path / "s1", f1, "s1")
+    two = _spec(tmp_path / "s2", f1, "s2")
+    document = json.loads(one.images_json.read_text())
+    point = f1.to_ecef([0.4, 0.5, 1.2])
+    document["images"].append(
+        {
+            **_image(point),
+            "path": "cam4/IMG_0001.JPG",
+            "camera": 4,
+            "pulse": None,
+            "auxiliary": True,
+            "antenna_enu": f1.from_ecef(point).tolist(),
+        }
+    )
+    one.images_json.write_text(json.dumps(document))
+    (one.images_root / "cam4").mkdir(exist_ok=True)
+    Image.new("RGB", (160, 120)).save(one.images_root / "cam4" / "IMG_0001.JPG")
+    rig = replace(
+        one.rig,
+        cameras=one.rig.cameras
+        + (Camera(4, "auxiliary", "cam4", None, np.array([0.1, 0.2, 0.3]), (0.0, 0.0, 0.0)),),
+    )
+    one = type(one)("s1", one.images_json, one.images_root, rig, one.rig_path)
+    prepare_sessions([one, two], tmp_path / "ws")
+    record = json.loads((tmp_path / "ws" / "priors.json").read_text())
+    assert record["s1/cam4/IMG_0001.JPG"]["auxiliary"] is True
+    assert record["s1/cam0/IMG_0002.JPG"]["auxiliary"] is False

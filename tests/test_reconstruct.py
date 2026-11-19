@@ -437,3 +437,20 @@ def test_refine_does_not_hold_out_an_auxiliary_image_without_a_pulse(tmp_path):
     assert result["held_out"] == sum(
         1 for r in record.values() if r["pulse"] is not None and r["pulse"] % 10 == 0
     )
+
+
+def test_prepare_removes_a_stale_multi_session_overlay(tmp_path):
+    import json
+
+    from georoute.reconstruct import prepare
+
+    rig = load_rig(EXAMPLE)
+    images = _textured_photos(tmp_path / "images", rig)
+    (tmp_path / "images.json").write_text(json.dumps({"images": images, "frame": {"id": "test"}}))
+    ws = tmp_path / "ws"
+    (ws / "images" / "s1").mkdir(parents=True)
+    (ws / "rigs").mkdir()
+    (ws / "sessions.json").write_text("{}")
+    prepare(tmp_path / "images.json", tmp_path / "images", ws, rig)
+    assert not (ws / "sessions.json").exists()
+    assert not (ws / "images").exists() and not (ws / "rigs").exists()

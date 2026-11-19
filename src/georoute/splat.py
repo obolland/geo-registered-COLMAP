@@ -143,10 +143,10 @@ def images_near_path(
     on_route = (route.s >= s_start) & (route.s <= s_end)
     if not on_route.any():
         raise SplatExportError(f"the route has no path between s={s_start:g} and s={s_end:g}")
-    tree = cKDTree(route.enu[on_route, :2])
+    tree = cKDTree(route.enu[on_route])
     selected = []
     for name, item in record.items():
-        distance = tree.query(np.asarray(item["centre"], float)[:2], k=1)[0]
+        distance = tree.query(np.asarray(item["centre"], float), k=1)[0]
         if distance <= radius_m:
             selected.append(name)
     if not selected:

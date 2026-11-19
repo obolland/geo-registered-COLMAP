@@ -27,6 +27,7 @@ EXIF_TAGS = [
     "SubSecTimeOriginal",
     "ExposureTime",
     "FocalLength",
+    "OffsetTimeOriginal",
 ]
 NAME_NUMBER = re.compile(r"(\d+)$")
 # A faulty camera's photos must agree with this many pulse intervals before its lost tail is accepted.
@@ -46,6 +47,7 @@ class Photo:
     exposure_s: float
     focal_mm: float | None
     serial: str | None
+    utc_offset_s: float | None = None
 
     @property
     def name(self) -> str:
@@ -146,9 +148,22 @@ def photos_from_exiftool(records: list[dict], camera: int, root: Path) -> list[P
                 exposure,
                 r.get("FocalLength"),
                 None if serial is None else str(serial),
+                _utc_offset_s(r.get("OffsetTimeOriginal"), f"cam{camera}: {path}"),
             )
         )
     return photos
+
+
+def _utc_offset_s(value, where: str) -> float | None:
+    """EXIF OffsetTimeOriginal, normally +-HH:MM: local time = UTC + offset."""
+    if value is None:
+        return None
+    found = re.fullmatch(r"([+-])(\d{2}):(\d{2})(?::(\d{2}))?", str(value).strip())
+    if not found:
+        raise MatchError(f"{where} has unreadable EXIF OffsetTimeOriginal {value!r}")
+    sign, hours, minutes, seconds = found.groups()
+    magnitude = int(hours) * 3600 + int(minutes) * 60 + int(seconds or 0)
+    return magnitude if sign == "+" else -magnitude
 
 
 def order_photos(photos: list[Photo], wrap: int = CameraType.file_number_wrap) -> list[Photo]:

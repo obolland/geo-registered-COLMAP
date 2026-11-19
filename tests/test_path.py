@@ -568,3 +568,15 @@ def test_a_height_step_is_smoothed_into_finite_heights_and_grade():
     assert np.all(np.isfinite(profile.grade_percent))
     assert np.abs(np.diff(profile.h_ortho_m)).max() < 0.2
     assert np.abs(np.diff(profile.grade_percent)).max() < 5.0
+
+
+def test_pulse_times_and_quality_ignore_auxiliary_images():
+    from georoute.path import _image_quality, _pulse_times
+
+    images = [
+        {"pulse": None, "t_mid_gps_s": 10.0, "carr_soln": 2, "flags": ["auxiliary"]},
+        {"pulse": 2, "t_mid_gps_s": 10.2, "carr_soln": 2, "flags": []},
+        {"pulse": 3, "t_mid_gps_s": 10.4, "carr_soln": 1, "flags": []},
+    ]
+    assert _pulse_times(images) == {2: 10.2, 3: 10.4}
+    assert _image_quality(images) == {2: (), 3: ("rtk-float",)}

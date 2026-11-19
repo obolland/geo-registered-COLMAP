@@ -460,3 +460,22 @@ def test_a_fault_on_a_complete_camera_warns(session):
     warnings = []
     match_photos(session, {0: _photos_for(session, 0)}, faulty={0}, warnings=warnings)
     assert any("cam0" in w and "nothing was lost" in w for w in warnings)
+
+
+def test_exif_offset_time_is_parsed_with_its_sign():
+    def record(offset):
+        return [
+            {
+                "SourceFile": "/x/cam4/IMG_1.JPG",
+                "DateTimeOriginal": "2026:11:08 14:43:08",
+                "ExposureTime": 0.001,
+                "OffsetTimeOriginal": offset,
+            }
+        ]
+
+    (photo,) = photos_from_exiftool(record("+01:00"), camera=0, root=Path("/x"))
+    assert photo.utc_offset_s == 3600
+    (photo,) = photos_from_exiftool(record("-05:30"), camera=0, root=Path("/x"))
+    assert photo.utc_offset_s == -19800
+    with pytest.raises(MatchError, match="OffsetTimeOriginal"):
+        photos_from_exiftool(record("+1"), camera=0, root=Path("/x"))

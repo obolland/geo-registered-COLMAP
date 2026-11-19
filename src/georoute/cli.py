@@ -65,7 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--aux-clock-offset-s",
         type=float,
         default=0.0,
-        help="camera clock offset from UTC, seconds (estimate later with aux-offset)",
+        help="seconds added to the camera's EXIF time to reach GPS time (estimate later with aux-offset)",
+    )
+    run.add_argument(
+        "--aux-utc-offset-s",
+        type=float,
+        default=None,
+        help="timezone when EXIF OffsetTimeOriginal is absent: local time = UTC + this, seconds",
     )
     run.add_argument(
         "--aux-sigma-m",
@@ -156,7 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--block-id")
     export.epilog = "exit status: 0 exported, 1 refused or failed"
     aux = sub.add_parser(
-        "aux-offset", help="estimate an auxiliary camera's clock offset from a mapped workspace"
+        "aux-offset",
+        help="estimate an auxiliary camera's clock offset from a mapped workspace",
+        description=(
+            "The initial offset must place the auxiliary priors within roughly 15 m of the track, about "
+            "10 s at riding speed, or spatial matching cannot pair them with the capture images."
+        ),
     )
     aux.add_argument("workspace", type=Path, help="COLMAP workspace with the auxiliary images mapped")
     aux.add_argument("--images", type=Path, required=True, help="the images.json that ingest wrote")
@@ -251,7 +262,13 @@ def _ingest(args) -> int:
     try:
         curtain = None if args.curtain_travel_ms is None else args.curtain_travel_ms / 1000
         aux = (
-            AuxiliaryInput(args.aux_folder, args.aux_camera, args.aux_clock_offset_s, args.aux_sigma_m)
+            AuxiliaryInput(
+                args.aux_folder,
+                args.aux_camera,
+                args.aux_clock_offset_s,
+                args.aux_sigma_m,
+                args.aux_utc_offset_s,
+            )
             if args.aux_folder
             else None
         )
@@ -394,7 +411,7 @@ def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> 
     try:
         rigs = rigs_from_sessions(workspace)
         if rigs is not None and rig is None:
-            rig = next(iter(rigs.values()))
+            rig = rigs[sorted(rigs)[0]]
         started = time.monotonic()
         mapped = reconstruct(workspace, images_root, mapper=mapper)
         print(
@@ -473,7 +490,7 @@ def _colmap_report(args) -> int:
         _require_rig(args.workspace, rig)
         rigs = rigs_from_sessions(args.workspace)
         if rigs is not None and rig is None:
-            rig = next(iter(rigs.values()))
+            rig = rigs[sorted(rigs)[0]]
         result = report(args.workspace, rig, rigs=rigs)
     except (RigError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
@@ -532,7 +549,12 @@ def _route_build(args) -> int:
 def _aux_offset(args) -> int:
     import pycolmap
 
-    from georoute.auxiliary import AuxiliaryError, estimate_clock_offset
+    from georoute.auxiliary import (
+        AuxiliaryError,
+        auxiliary_matched_capture,
+        estimate_clock_offset,
+        find_auxiliary_entry,
+    )
     from georoute.geodesy import lla_to_ecef
     from georoute.multisession import doc_frame, load_sessions, session_frame_from
     from georoute.session import load_session
@@ -546,16 +568,23 @@ def _aux_offset(args) -> int:
         session = load_session(args.session)
         if session.datum != frame.datum:
             raise AuxiliaryError(f"session datum {session.datum} and workspace frame {frame.datum} disagree")
-        which = "refined" if (args.workspace / "sparse" / "refined").is_dir() else "0"
-        model = pycolmap.Reconstruction(args.workspace / "sparse" / which)
-        registered = {
-            model.images[image_id].name: model.images[image_id].projection_center()
-            for image_id in model.reg_image_ids()
-            if model.images[image_id].name in entries
-        }
+        if not auxiliary_matched_capture(args.workspace, entries):
+            raise AuxiliaryError(
+                "no auxiliary photo has a verified match to a capture image; the initial clock offset is "
+                "probably more than about 15 m of track (roughly 10 s at riding speed) out"
+            )
+        # sparse/0 is before refine moves auxiliary poses towards priors that may still carry the clock
+        # error; the mapper's own metric alignment is the honest basis for the offset.
+        model = pycolmap.Reconstruction(args.workspace / "sparse" / "0")
+        registered = {}
+        for image_id in model.reg_image_ids():
+            name = model.images[image_id].name
+            entry = find_auxiliary_entry(name, entries)
+            if entry is not None:
+                registered[name] = (model.images[image_id].projection_center(), entry["aux_raw_gps_s"])
         if not registered:
             raise AuxiliaryError("no auxiliary photo is registered; map the workspace first")
-        aux = {name: (centre, entries[name]["aux_raw_gps_s"]) for name, centre in registered.items()}
+        aux = registered
         track = frame.from_ecef(lla_to_ecef(session.pvt.lat_deg, session.pvt.lon_deg, session.pvt.height_m))
         result = estimate_clock_offset(aux, track, session.pvt.gps_time_s)
     except (AuxiliaryError, OSError, ValueError, KeyError, RuntimeError) as e:
@@ -581,7 +610,7 @@ def _splat_export(args) -> int:
         rigs = rigs_from_sessions(args.workspace)
         if rig is None and rigs is None:
             raise SplatExportError("pass --rig")
-        rig = rig or next(iter(rigs.values()))
+        rig = rig or rigs[sorted(rigs)[0]]
         print(f"exporting splat block from {args.workspace} ...", flush=True)
         result = export_block(
             args.workspace,
