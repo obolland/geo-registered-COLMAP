@@ -833,7 +833,7 @@ Recommended capture change, in order:
 3. A return pass is useful for 3-10 m texture and parallax but cannot recover 0-3 m.
 4. Do not expect side yaw alone to fix the near road.
 
-## Nerfstudio splatfacto control (prepared, not run)
+## Nerfstudio splatfacto control (run 2026-11-19)
 
 Script: `ops/aws/jobs/nerfstudio-control.sh`. It is an isolated control, not a change to
 the production trainer.
@@ -897,3 +897,51 @@ most 240. The job has not been run and no AWS resource was started. The split, p
 CLI parse are verified locally on CPU; the untested step is the first CUDA import compile
 of gsplat/nerfacc on the instance. `images_2` (4.81 GB) must be uploaded to the block
 before either the combined job or the control can pull it.
+
+
+### Nerfstudio control result
+
+The control trained fully (30k, 78 min). `ns-eval` and `ns-export` then failed because they
+ran from a different working directory than `ns-train`: the config records `output_dir`
+relative to the training directory, so `load_dir` resolved to
+`outputs/unnamed/splatfacto/2026-11-19_172209/nerfstudio_models` under the wrong cwd. The job
+now runs both from `$RESULTS` and checks that `ns-train` and `ns-export` parse before
+training (commit `3d40381`). Reproduced locally: the same config gives `exists False` from
+`/tmp` and `exists True` from the training directory.
+
+The checkpoint was converted to a standard 3DGS PLY with
+`research/probes/nerfstudio_ckpt_to_ply.py` (commit `73e3252`) and
+`dataparser_transforms.json`. The transform is a rigid rotation of about 3 degrees and a
+uniform scale of 0.0162806; means go back through inv(T) with 1/scale, log-scales subtract
+log(scale), and quats compose inv(q_T). The 491,981 Gaussians were filtered exactly as
+`ns-export` does (finite, opacity logit at least logit(1/255)), leaving 466,388. Higher-order
+SH is left unrotated; the rotation is small and f_dc is view-independent.
+`~/fieldtest2/splat/pilot/s160-l100-nerfstudio-30k.ply` (105 MB).
+
+Scored with the validated CPU renderer on the same 72 held-out views for both PLYs: block
+`images_4`, resized to 675x442 (block factor 8), SH3, eps2d 0.3/4, white background. The
+combined PLY scores 22.86 dB here against 23.0 on the GPU at factor 2, so the protocol
+reproduces the training-time number. Road metrics use the published route path, a 3 m wide
+band (lateral +-1.5 m) projected into each view; 64 of 72 views carry at least 0.5% road
+pixels and enter the road means.
+
+| metric | combined gsplat | nerfstudio splatfacto | delta |
+| --- | --- | --- | --- |
+| all 72, PSNR / SSIM | 22.86 / 0.690 | 15.32 / 0.536 | -7.54 |
+| failing stretch 180-210, PSNR | 21.16 (n=16) | 9.66 | -11.50 |
+| rest, PSNR | 23.34 (n=56) | 16.94 | -6.40 |
+| road, PSNR | 26.60 (n=64) | 15.88 | -10.72 |
+| road failing 180-210, PSNR | 27.16 | 10.02 | -17.14 |
+| road rest, PSNR | 26.41 | 17.83 | -8.58 |
+| per-camera PSNR, cam0 / cam1 / cam2 / cam3 | 22.93 / 23.82 / 23.29 / 21.38 | 18.17 / 16.16 / 14.54 / 12.42 | -4.76 / -7.66 / -8.75 / -8.96 |
+
+The model's own aggregate eval at step 29,000 in the tfevents was 15.69 PSNR / 0.620 SSIM,
+matching the CPU score of 15.32 / 0.536 to within protocol differences. The conversion and
+scoring are therefore faithful; the model is genuinely poor on this block.
+
+Verdict: splatfacto does not beat our gsplat setup, on the block or on the road. It is 7.5 dB
+worse overall, 10.7 dB worse on the road, and 11.5 dB worse in the failing stretch; only cam0
+comes close. The likely cause is the same failure the slice 8 prunes addressed: the default
+splatfacto model has no near-camera or giant-splat control and ends with a dense, high-opacity
+fog (median opacity 0.85 against 0.47 for the combined model; 46 Gaussians above 20 m, maximum
+91 m against 6.6 m). The road is hit hardest because that fog sits over the road surface.

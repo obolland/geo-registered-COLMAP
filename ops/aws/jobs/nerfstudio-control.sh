@@ -157,6 +157,13 @@ assert _C is not None
 print('gsplat CUDA extension ok; nerfacc ok; gpu', torch.cuda.get_device_name(0))
 PY" 2>&1 | tee -a "$LOG"
 
+log "check the trainer and exporter parse"
+as_owner "$NS_VENV/bin/ns-train splatfacto --max-num-iterations 30000 \
+    --viewer.quit-on-train-completion True --vis tensorboard \
+    colmap --data $NS_DATA --downscale-factor 2 --eval-mode filename --help >/dev/null \
+    && $NS_VENV/bin/ns-export gaussian-splat --help >/dev/null \
+    && echo 'ns-train and ns-export parse'" 2>&1 | tee -a "$LOG"
+
 log "train splatfacto (30k, factor 2, filename train/eval split)"
 cat >"$WORK/run.sh" <<TRAIN
 #!/usr/bin/env bash
@@ -188,11 +195,13 @@ CFG=$(find "$RESULTS/outputs" -name config.yml -type f -print | sort | tail -n 1
 [[ -f $CFG ]] || { echo "no config.yml under $RESULTS/outputs" >&2; exit 1; }
 cp "$CFG" "$RESULTS/config.yml"
 
+# The config records output_dir relative to the directory ns-train ran in. ns-eval and ns-export must
+# run from that same directory or they look for the checkpoint in the wrong place (2026-11-19 run).
 log "evaluate on heldout list"
-as_owner "$NS_VENV/bin/ns-eval --load-config $CFG --output-path $RESULTS/eval.json" 2>&1 | tee -a "$LOG"
+as_owner "cd $RESULTS && $NS_VENV/bin/ns-eval --load-config $CFG --output-path $RESULTS/eval.json" 2>&1 | tee -a "$LOG"
 
 log "export gaussian splat PLY"
-as_owner "$NS_VENV/bin/ns-export gaussian-splat --load-config $CFG --output-dir $RESULTS/ply" 2>&1 | tee -a "$LOG"
+as_owner "cd $RESULTS && $NS_VENV/bin/ns-export gaussian-splat --load-config $CFG --output-dir $RESULTS/ply" 2>&1 | tee -a "$LOG"
 
 log "versions and artifacts"
 {
