@@ -69,3 +69,12 @@ def test_rig_calibrate_parses_a_session():
 
     args = build_parser().parse_args(["rig-calibrate", "ws", "--out", "c.toml", "--session", "s2"])
     assert args.session == "s2" and args.rig is None
+
+
+def test_splat_export_parses_a_session_workspace():
+    from georoute.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["splat-export", "ws", "--route", "r", "--out", "o", "--block-start", "160", "--image-radius", "12"]
+    )
+    assert args.images_root is None and args.rig is None and args.image_radius == 12

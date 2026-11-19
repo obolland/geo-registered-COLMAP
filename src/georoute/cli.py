@@ -114,9 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
     route.epilog = "exit status: 0 all QA gates pass, 1 built with a failing segment, 2 refused"
     export = sub.add_parser("splat-export", help="export one splat training block from a refined workspace")
     export.add_argument("workspace", type=Path, help="COLMAP workspace with sparse/refined and priors.json")
-    export.add_argument("--images-root", type=Path, required=True, help="folder holding cam0..camN")
+    export.add_argument(
+        "--images-root",
+        type=Path,
+        help="folder holding cam0..camN (a multi-session workspace defaults to its own)",
+    )
     export.add_argument("--route", type=Path, required=True, help="published route package directory")
-    export.add_argument("--rig", type=Path, required=True)
+    export.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
     export.add_argument("--out", type=Path, required=True, help="folder for <block_id>")
     export.add_argument("--block-start", type=float, required=True, metavar="METRES")
     export.add_argument("--block-length", type=float, default=100.0, metavar="METRES")
@@ -124,6 +128,13 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--data-factor", type=int, default=4)
     export.add_argument("--holdout-every", type=int, default=10)
     export.add_argument("--point-radius", type=float, default=60.0, metavar="METRES")
+    export.add_argument(
+        "--image-radius",
+        type=float,
+        default=20.0,
+        metavar="METRES",
+        help="multi-session only: keep images within this distance of the block's path",
+    )
     export.add_argument("--block-id")
     export.epilog = "exit status: 0 exported, 1 refused or failed"
     return parser
@@ -342,7 +353,8 @@ def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> 
 
     try:
         rigs = rigs_from_sessions(workspace)
-        rig = rig or next(iter(rigs.values())) if rigs else rig
+        if rigs is not None and rig is None:
+            rig = next(iter(rigs.values()))
         started = time.monotonic()
         mapped = reconstruct(workspace, images_root, mapper=mapper)
         print(
@@ -420,7 +432,8 @@ def _colmap_report(args) -> int:
         rig = load_rig(args.rig) if args.rig else None
         _require_rig(args.workspace, rig)
         rigs = rigs_from_sessions(args.workspace)
-        rig = rig or next(iter(rigs.values())) if rigs else rig
+        if rigs is not None and rig is None:
+            rig = next(iter(rigs.values()))
         result = report(args.workspace, rig, rigs=rigs)
     except (RigError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
@@ -477,15 +490,24 @@ def _route_build(args) -> int:
 
 
 def _splat_export(args) -> int:
+    from georoute.multisession import images_root_from_sessions, rigs_from_sessions
     from georoute.splat import SplatExportError, export_block
 
     try:
+        images_root = args.images_root or images_root_from_sessions(args.workspace)
+        if images_root is None:
+            raise SplatExportError("pass --images-root")
+        rig = load_rig(args.rig) if args.rig else None
+        rigs = rigs_from_sessions(args.workspace)
+        if rig is None and rigs is None:
+            raise SplatExportError("pass --rig")
+        rig = rig or next(iter(rigs.values()))
         print(f"exporting splat block from {args.workspace} ...", flush=True)
         result = export_block(
             args.workspace,
-            args.images_root,
+            images_root,
             args.route,
-            load_rig(args.rig),
+            rig,
             args.out,
             args.block_start,
             block_length=args.block_length,
@@ -494,6 +516,7 @@ def _splat_export(args) -> int:
             holdout_every=args.holdout_every,
             point_radius_m=args.point_radius,
             block_id=args.block_id,
+            image_radius_m=args.image_radius,
         )
     except (SplatExportError, RigError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)

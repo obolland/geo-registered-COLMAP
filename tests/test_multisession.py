@@ -302,7 +302,7 @@ def test_report_checks_each_session_against_its_own_rig(tmp_path):
     rigs = {"s1": rig("s1"), "s2": rig("s2")}
     out = report(ws, rigs["s1"], rigs=rigs)
     assert set(out["sessions"]) == {"s1", "s2"}
-    for label, session in out["sessions"].items():
+    for session in out["sessions"].values():
         assert session["prior_residuals"]["cam0"]["images"] == 6
         assert session["registration"]["cam0"]["registered"] == 6
         assert session["scale_against_rtk"] == pytest.approx(1.0)

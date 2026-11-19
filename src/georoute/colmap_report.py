@@ -111,9 +111,7 @@ def scale_against_priors(
     prefix: str = "",
 ) -> float | None:
     """Reconstructed path length over the prior path length, along one camera's photos in pulse order."""
-    names = sorted(
-        (n for n in priors if n.startswith(f"{prefix}{camera}/") and n in centres), key=order.get
-    )
+    names = sorted((n for n in priors if n.startswith(f"{prefix}{camera}/") and n in centres), key=order.get)
     if len(names) < 2:
         return None
     prior_length = sum(np.linalg.norm(priors[b] - priors[a]) for a, b in zip(names, names[1:], strict=False))
