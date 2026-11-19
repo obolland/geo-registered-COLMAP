@@ -249,3 +249,62 @@ def test_matching_reports_session_and_camera_pairs(tmp_path):
     assert report["by_session_pair_direction"]["s1-s2"]["same"] >= 1
     assert any(key.startswith("s1/cam") and "s2/cam" in key for key in report["by_camera_pair"])
     assert report["verified_pairs"] >= report["by_session_pair"]["s1-s2"]
+
+
+def test_report_checks_each_session_against_its_own_rig(tmp_path):
+    from georoute.reconstruct import report
+    from georoute.rig import Camera, Rig
+
+    options = pycolmap.SyntheticDatasetOptions()
+    options.num_rigs = 1
+    options.num_cameras_per_rig = 1
+    options.num_frames_per_rig = 12
+    options.num_points3D = 400
+    options.prior_position = True
+    options.prior_position_coordinate_system = pycolmap.PosePriorCoordinateSystem.CARTESIAN
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with pycolmap.Database.open(ws / "database.db") as db:
+        truth = pycolmap.synthesize_dataset(options, db)
+    record = {}
+    for index, image in enumerate(truth.images.values()):
+        label = "s1" if index < 6 else "s2"
+        image.name = f"{label}/cam0/{image.name}"
+        record[image.name] = {
+            "session": label,
+            "camera": 0,
+            "pulse": index if index < 6 else index - 6,
+            "fixed": True,
+            "antenna_enu": image.projection_center().tolist(),
+            "sigma_h_m": 0.01,
+            "sigma_v_m": 0.01,
+            "centre": image.projection_center().tolist(),
+            "covariance": (np.eye(3) * 1e-4).tolist(),
+        }
+    (ws / "sparse" / "0").mkdir(parents=True)
+    truth.write(ws / "sparse" / "0")
+    (ws / "priors.json").write_text(json.dumps(record))
+    (ws / "mapping.json").write_text(
+        json.dumps({"models": 1, "images": len(record), "registered": len(record)})
+    )
+
+    def rig(label):
+        return Rig(
+            label,
+            True,
+            (Camera(0, "", "cam0", None, np.zeros(3), (0.0, 0.0, 0.0)),),
+            np.zeros(3),
+            1.0,
+            0.0,
+            label,
+        )
+
+    rigs = {"s1": rig("s1"), "s2": rig("s2")}
+    out = report(ws, rigs["s1"], rigs=rigs)
+    assert set(out["sessions"]) == {"s1", "s2"}
+    for label, session in out["sessions"].items():
+        assert session["prior_residuals"]["cam0"]["images"] == 6
+        assert session["registration"]["cam0"]["registered"] == 6
+        assert session["scale_against_rtk"] == pytest.approx(1.0)
+        assert session["failures"] == []
+    assert out["failures"] == []

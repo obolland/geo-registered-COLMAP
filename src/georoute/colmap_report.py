@@ -6,13 +6,19 @@ from georoute.rig import Rig
 
 
 def prior_residuals(
-    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], fixed: dict[str, bool]
+    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], fixed: dict[str, bool], strip: str = ""
 ) -> dict[str, dict]:
-    """Reconstructed minus prior camera centre, per camera folder, over RTK-fixed images only."""
+    """Reconstructed minus prior camera centre, per camera folder, over RTK-fixed images only. strip
+    removes a session prefix, so a multi-session workspace is reported per camera folder within a session."""
+    view = {name[len(strip) :]: name for name in priors if name.startswith(strip)}
     out: dict[str, dict] = {}
-    for camera in sorted({name.split("/")[0] for name in priors}):
-        names = [n for n in priors if n.startswith(f"{camera}/") and n in centres and fixed.get(n)]
-        d = np.array([centres[n] - priors[n] for n in names]).reshape(-1, 3)
+    for camera in sorted({name.split("/")[0] for name in view}):
+        names = [
+            n
+            for n, full in view.items()
+            if n.startswith(f"{camera}/") and full in centres and fixed.get(full)
+        ]
+        d = np.array([centres[view[n]] - priors[view[n]] for n in names]).reshape(-1, 3)
         h, v = np.hypot(d[:, 0], d[:, 1]), np.abs(d[:, 2])
         stats = {"images": len(names)}
         for label, values in (("horizontal", h), ("vertical", v)):
@@ -98,10 +104,16 @@ def gate(residuals: dict, rig: dict, expected_cameras: list[str] | None = None) 
 
 
 def scale_against_priors(
-    priors: dict[str, np.ndarray], centres: dict[str, np.ndarray], order: dict[str, int], camera: str
+    priors: dict[str, np.ndarray],
+    centres: dict[str, np.ndarray],
+    order: dict[str, int],
+    camera: str,
+    prefix: str = "",
 ) -> float | None:
     """Reconstructed path length over the prior path length, along one camera's photos in pulse order."""
-    names = sorted((n for n in priors if n.startswith(f"{camera}/") and n in centres), key=order.get)
+    names = sorted(
+        (n for n in priors if n.startswith(f"{prefix}{camera}/") and n in centres), key=order.get
+    )
     if len(names) < 2:
         return None
     prior_length = sum(np.linalg.norm(priors[b] - priors[a]) for a, b in zip(names, names[1:], strict=False))

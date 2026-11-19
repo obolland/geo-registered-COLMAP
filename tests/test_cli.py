@@ -62,3 +62,10 @@ def test_colmap_prepare_parses_additional_sessions():
         build_parser().parse_args(["colmap-prepare", "i.json", "img", "--rig", "r", "--out", "w"]).session
         == []
     )
+
+
+def test_rig_calibrate_parses_a_session():
+    from georoute.cli import build_parser
+
+    args = build_parser().parse_args(["rig-calibrate", "ws", "--out", "c.toml", "--session", "s2"])
+    assert args.session == "s2" and args.rig is None

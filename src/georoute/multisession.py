@@ -1,5 +1,6 @@
 """Several capture sessions in one workspace: a common frame, session-qualified image names and inputs."""
 
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -245,8 +246,6 @@ def _write_sessions(workspace: Path, frame: LocalFrame, specs: list[SessionSpec]
             raise MultiSessionError(f"session {spec.label!r} has no rig file to record")
         target = rigs / f"{spec.label}.toml"
         shutil.copyfile(spec.rig_path, target)
-        import hashlib
-
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
         if digest != spec.rig.sha256:
             raise MultiSessionError(f"rig file {spec.rig_path} changed while preparing; rerun")
@@ -303,3 +302,47 @@ def image_headings(record: dict) -> dict[str, np.ndarray]:
             if np.linalg.norm(direction) > 0:
                 out[name] = direction
     return out
+
+
+def load_sessions(workspace) -> dict | None:
+    """The sessions.json a multi-session prepare wrote, or None for a single-session workspace."""
+    path = Path(workspace) / SESSIONS_FILE
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise MultiSessionError(f"can't read {path}: {e}") from e
+
+
+def session_frame_from(workspace) -> LocalFrame:
+    doc = load_sessions(workspace)
+    if doc is None:
+        raise MultiSessionError(f"{workspace} has no {SESSIONS_FILE}")
+    frame = doc["frame"]
+    return LocalFrame.at(frame["lat_deg"], frame["lon_deg"], frame["h_m"], frame["datum"])
+
+
+def rigs_from_sessions(workspace) -> dict[str, Rig] | None:
+    """Each session's rig, reloaded from the copies kept in the workspace; None when there is no
+    sessions.json. A rig file that changed since prepare is refused rather than silently used."""
+    from georoute.rig import load_rig
+
+    doc = load_sessions(workspace)
+    if doc is None:
+        return None
+    out = {}
+    for session in doc["sessions"]:
+        path = Path(workspace) / session["rig"]["path"]
+        rig = load_rig(path)
+        if rig.sha256 != session["rig"]["sha256"]:
+            raise MultiSessionError(f"rig {path} changed since prepare; prepare the workspace again")
+        out[session["label"]] = rig
+    return out
+
+
+def images_root_from_sessions(workspace) -> Path | None:
+    doc = load_sessions(workspace)
+    if doc is None or not doc.get("images_root"):
+        return None
+    return Path(workspace) / doc["images_root"]

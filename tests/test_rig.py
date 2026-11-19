@@ -185,3 +185,39 @@ def test_rig_check_command(capsys):
     assert main(["rig-check", str(EXAMPLE)]) == 0
     out = capsys.readouterr().out
     assert "NOT MEASURED" in out and "cam2" in out and "lever arm" in out
+
+
+def test_refine_priors_uses_each_images_own_rig():
+    from georoute.rig import Camera, Rig, refine_priors
+
+    def rig(name, position):
+        return Rig(
+            name,
+            True,
+            (Camera(0, "", "cam0", None, np.array(position, float), (0.0, 0.0, 0.0)),),
+            np.array([0.0, 0.0, 0.0]),
+            1.0,
+            0.0,
+            name,
+        )
+
+    rig_a, rig_b = rig("a", [0.3, 0.0, 0.0]), rig("b", [0.0, 0.3, 0.0])
+    antenna = {
+        "a/1": (0, np.array([0.0, 0.0, 1.0])),
+        "a/2": (0, np.array([1.0, 0.2, 1.0])),
+        "b/1": (0, np.array([0.0, 0.0, 1.0])),
+        "b/2": (0, np.array([1.0, 0.2, 1.0])),
+    }
+    rigs = {"a": rig_a, "b": rig_b}
+    result = refine_priors(
+        rig_a,
+        antenna,
+        lambda priors: {name: np.eye(3) for name in priors},
+        rig_for=lambda name: rigs[name.split("/")[0]],
+        min_lateral_spread_m=0.0,
+    )
+    for name, (_, position) in antenna.items():
+        own = rigs[name.split("/")[0]]
+        world_from_rig = own.rig_from_camera(0).T
+        expected = position + world_from_rig @ (own.camera(0).position_in_rig_m - own.lever_arm_m)
+        np.testing.assert_allclose(result.priors[name], expected, atol=1e-12)

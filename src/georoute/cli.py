@@ -92,14 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     remap.add_argument("workspace", type=Path)
     remap.add_argument("images_root", type=Path)
-    remap.add_argument("--rig", type=Path, required=True)
+    remap.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
     remap.add_argument("--mapper", choices=("incremental", "global"), default="incremental")
     rep = sub.add_parser("colmap-report", help="re-check a workspace's reconstruction against priors and rig")
     rep.add_argument("workspace", type=Path)
-    rep.add_argument("--rig", type=Path, required=True)
+    rep.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
     cal = sub.add_parser("rig-calibrate", help="calibrated rig config from a workspace's reconstruction")
     cal.add_argument("workspace", type=Path)
-    cal.add_argument("--rig", type=Path, required=True)
+    cal.add_argument("--rig", type=Path, help="rig config (not needed for a multi-session workspace)")
+    cal.add_argument("--session", help="session to calibrate in a multi-session workspace")
     cal.add_argument("--out", type=Path, required=True)
     rig = sub.add_parser("rig-check", help="validate a rig config and print its geometry")
     rig.add_argument("rig_toml", type=Path)
@@ -293,7 +294,15 @@ def _colmap_run(args) -> int:
     try:
         pulses = _pulse_range(args.pulses)
         rig = load_rig(args.rig)
-        print("prepare:", prepare(args.images_json, args.images_root, args.out, rig, pulses), flush=True)
+        if args.session:
+            from georoute.multisession import load_session_spec, prepare_sessions
+
+            specs = [load_session_spec(args.images_json, args.images_root, args.rig)]
+            specs += [load_session_spec(*extra) for extra in args.session]
+            summary = prepare_sessions(specs, args.out, pulses)
+        else:
+            summary = prepare(args.images_json, args.images_root, args.out, rig, pulses)
+        print("prepare:", summary, flush=True)
         matched = match(args.out)
         print(
             f"match: {matched['verified_pairs']} verified pairs, "
@@ -308,19 +317,32 @@ def _colmap_run(args) -> int:
 
 def _colmap_map(args) -> int:
     try:
-        rig = load_rig(args.rig)
-    except RigError as e:
+        rig = load_rig(args.rig) if args.rig else None
+        _require_rig(args.workspace, rig)
+    except (RigError, ValueError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     return _map_refine_report(args.workspace, args.images_root, rig, args.mapper)
 
 
+def _require_rig(workspace, rig):
+    """A single-session workspace needs --rig; a multi-session one carries its session rigs."""
+    if rig is None:
+        from georoute.multisession import load_sessions
+
+        if load_sessions(workspace) is None:
+            raise RigError(f"{workspace} has no sessions.json; pass --rig")
+
+
 def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> int:
     import time
 
+    from georoute.multisession import rigs_from_sessions
     from georoute.reconstruct import ReconstructionError, reconstruct, refine, report
 
     try:
+        rigs = rigs_from_sessions(workspace)
+        rig = rig or next(iter(rigs.values())) if rigs else rig
         started = time.monotonic()
         mapped = reconstruct(workspace, images_root, mapper=mapper)
         print(
@@ -328,8 +350,8 @@ def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> 
             f"{(time.monotonic() - started) / 60:.1f} min",
             flush=True,
         )
-        print("refine:", refine(workspace, rig), flush=True)
-        result = report(workspace, rig)
+        print("refine:", refine(workspace, rig, rigs=rigs), flush=True)
+        result = report(workspace, rig, rigs=rigs)
     except (RigError, ValueError, OSError, KeyError, ReconstructionError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
@@ -341,10 +363,31 @@ def _map_refine_report(workspace: Path, images_root: Path, rig, mapper: str) -> 
 
 def _rig_calibrate(args) -> int:
     from georoute.calibrate import CalibrationError
+    from georoute.multisession import load_sessions, rigs_from_sessions
     from georoute.reconstruct import calibrate_rig
 
     try:
-        result = calibrate_rig(args.workspace, args.rig, args.out)
+        sessions = load_sessions(args.workspace)
+        if sessions:
+            labels = [session["label"] for session in sessions["sessions"]]
+            label = args.session
+            if label is None:
+                if len(labels) != 1:
+                    raise RigError(f"choose --session from {labels}")
+                label = labels[0]
+            if label not in labels:
+                raise RigError(f"{args.workspace} has no session {label!r}; it holds {labels}")
+            rigs_from_sessions(args.workspace)
+            recorded = next(s for s in sessions["sessions"] if s["label"] == label)
+            result = calibrate_rig(
+                args.workspace, args.workspace / recorded["rig"]["path"], args.out, session=label
+            )
+        else:
+            if args.session:
+                raise RigError("--session needs a multi-session workspace")
+            if args.rig is None:
+                raise RigError("pass --rig")
+            result = calibrate_rig(args.workspace, args.rig, args.out)
     except (RigError, CalibrationError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
@@ -370,19 +413,27 @@ def _pulse_range(text: str | None) -> tuple[int, int] | None:
 
 
 def _colmap_report(args) -> int:
+    from georoute.multisession import rigs_from_sessions
     from georoute.reconstruct import report
 
     try:
-        result = report(args.workspace, load_rig(args.rig))
+        rig = load_rig(args.rig) if args.rig else None
+        _require_rig(args.workspace, rig)
+        rigs = rigs_from_sessions(args.workspace)
+        rig = rig or next(iter(rigs.values())) if rigs else rig
+        result = report(args.workspace, rig, rigs=rigs)
     except (RigError, OSError, ValueError, KeyError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
-    for camera, r in result["prior_residuals"].items():
-        if r["images"]:
-            print(
-                f"{camera}: prior residual p95 horizontal {r['horizontal_p95_m'] * 100:.1f} cm, "
-                f"vertical {r['vertical_p95_m'] * 100:.1f} cm over {r['images']} fixed photos"
-            )
+    sessions = result.get("sessions")
+    for label, block in sessions.items() if sessions else [(None, result)]:
+        prefix = f"{label}: " if label else ""
+        for camera, r in block["prior_residuals"].items():
+            if r["images"]:
+                print(
+                    f"{prefix}{camera}: prior residual p95 horizontal {r['horizontal_p95_m'] * 100:.1f} cm, "
+                    f"vertical {r['vertical_p95_m'] * 100:.1f} cm over {r['images']} fixed photos"
+                )
     for failure in result["failures"]:
         print(f"GATE {failure}", file=sys.stderr)
     print(f"report: {args.workspace / 'report.json'}")
