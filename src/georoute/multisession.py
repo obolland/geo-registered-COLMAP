@@ -86,10 +86,37 @@ def images_in_frame(doc: dict, frame: LocalFrame) -> list[dict]:
         ecef = image.get("antenna_ecef")
         ecef = session_frame.to_ecef(image["antenna_enu"]) if ecef is None else np.asarray(ecef, float)
         copy["antenna_enu"] = frame.from_ecef(ecef).tolist()
-        velocity = np.asarray(image.get("velocity_enu", [0.0, 0.0, 0.0]), float)
-        copy["velocity_enu"] = (frame.ecef_from_enu.T @ (session_frame.ecef_from_enu @ velocity)).tolist()
+        if "velocity_enu" in image:
+            velocity = np.asarray(image["velocity_enu"], float)
+            copy["velocity_enu"] = (frame.ecef_from_enu.T @ (session_frame.ecef_from_enu @ velocity)).tolist()
         out.append(copy)
+    _fill_missing_velocity(out)
     return out
+
+
+def _fill_missing_velocity(images: list[dict]):
+    """Older images.json documents carry no receiver velocity. The rig's heading only needs the direction
+    of travel, so derive it from the antenna track, one centred difference per camera."""
+    groups: dict[int, list[dict]] = {}
+    for image in images:
+        if "velocity_enu" not in image:
+            groups.setdefault(image["camera"], []).append(image)
+    for camera in groups:
+        track = sorted((i for i in images if i["camera"] == camera), key=lambda i: i["t_mid_gps_s"])
+        times = np.array([i["t_mid_gps_s"] for i in track])
+        positions = np.array([i["antenna_enu"] for i in track])
+        for index, image in enumerate(track):
+            if "velocity_enu" in image:
+                continue
+            if len(track) < 2:
+                image["velocity_enu"] = [0.0, 0.0, 0.0]
+                continue
+            low, high = max(index - 1, 0), min(index + 1, len(track) - 1)
+            if high == low:
+                high = low + 1
+            if times[high] == times[low]:
+                raise MultiSessionError(f"two photos of cam{camera} carry the same time")
+            image["velocity_enu"] = ((positions[high] - positions[low]) / (times[high] - times[low])).tolist()
 
 
 def load_session_spec(images_json, images_root, rig_path, label: str | None = None) -> SessionSpec:
@@ -146,7 +173,9 @@ def prepare_sessions(
     for spec, doc in zip(specs, docs, strict=True):
         images = images_in_frame(doc, frame)
         if pulses is not None:
-            images = [i for i in images if pulses[0] <= i["pulse"] <= pulses[1]]
+            images = [
+                i for i in images if i.get("pulse") is not None and pulses[0] <= i["pulse"] <= pulses[1]
+            ]
         for image in images:
             name = session_image_name(spec.label, image["path"])
             source = spec.images_root / image["path"]
@@ -282,7 +311,7 @@ def image_headings(record: dict) -> dict[str, np.ndarray]:
     Centred differences keep the heading honest at pulse gaps and at both ends."""
     groups: dict[tuple, list] = {}
     for name, item in record.items():
-        if item.get("session") is None:
+        if item.get("session") is None or item.get("pulse") is None:
             continue
         groups.setdefault((item["session"], item["camera"]), []).append(
             (int(item["pulse"]), name, np.asarray(item["centre"], float)[:2])

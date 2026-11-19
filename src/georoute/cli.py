@@ -56,6 +56,24 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--curtain-travel-ms", type=float, help="overrides the rig's value (default 0 without a rig)"
     )
+    run.add_argument(
+        "--aux-folder",
+        help="enable an unsynchronised auxiliary camera: its folder under images_root, named cam<N>",
+    )
+    run.add_argument("--aux-camera", type=int, default=4, metavar="N", help="index for the auxiliary camera")
+    run.add_argument(
+        "--aux-clock-offset-s",
+        type=float,
+        default=0.0,
+        help="camera clock offset from UTC, seconds (estimate later with aux-offset)",
+    )
+    run.add_argument(
+        "--aux-sigma-m",
+        type=float,
+        default=5.0,
+        metavar="METRES",
+        help="loose prior sigma for auxiliary photos until the clock offset is known",
+    )
     run.epilog = "exit status: 0 ok, 1 refused (integrity, matching or positioning), 2 session unreadable"
     prep = sub.add_parser("colmap-prepare", help="COLMAP workspace: features per camera and camera priors")
     prep.add_argument("images_json", type=Path, help="images.json from ingest")
@@ -137,6 +155,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export.add_argument("--block-id")
     export.epilog = "exit status: 0 exported, 1 refused or failed"
+    aux = sub.add_parser(
+        "aux-offset", help="estimate an auxiliary camera's clock offset from a mapped workspace"
+    )
+    aux.add_argument("workspace", type=Path, help="COLMAP workspace with the auxiliary images mapped")
+    aux.add_argument("--images", type=Path, required=True, help="the images.json that ingest wrote")
+    aux.add_argument("--session", type=Path, required=True, help="logger session with the antenna track")
+    aux.epilog = "re-ingest with --aux-clock-offset-s set to the printed offset, then map again"
     return parser
 
 
@@ -165,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
         return _route_build(args)
     if args.command == "splat-export":
         return _splat_export(args)
+    if args.command == "aux-offset":
+        return _aux_offset(args)
     parser.print_help()
     return 0
 
@@ -219,8 +246,15 @@ def _match(args) -> int:
 
 
 def _ingest(args) -> int:
+    from georoute.auxiliary import AuxiliaryError, AuxiliaryInput
+
     try:
         curtain = None if args.curtain_travel_ms is None else args.curtain_travel_ms / 1000
+        aux = (
+            AuxiliaryInput(args.aux_folder, args.aux_camera, args.aux_clock_offset_s, args.aux_sigma_m)
+            if args.aux_folder
+            else None
+        )
         summary = ingest(
             args.session_dir,
             args.images_root,
@@ -229,19 +263,25 @@ def _ingest(args) -> int:
             _rig(args),
             allow_unmeasured_rig=args.allow_unmeasured_rig,
             camera_faults=set(args.camera_fault),
+            aux=aux,
         )
     except SessionError as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 2
-    except (IngestError, MatchError, TrajectoryError, RigError, OSError) as e:
+    except (IngestError, AuxiliaryError, MatchError, TrajectoryError, RigError, OSError) as e:
         print(f"ERROR {e}", file=sys.stderr)
         return 1
     flagged = ", ".join(f"{k} {v}" for k, v in summary["flagged"].items())
     for warning in summary["warnings"]:
         print(f"WARNING {warning}", file=sys.stderr)
+    aux_text = (
+        f"; {summary['auxiliary']['images']} auxiliary photos on cam{summary['auxiliary']['camera']}"
+        if summary.get("auxiliary")
+        else ""
+    )
     print(
-        f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped); "
-        f"flagged: {flagged}; written to {args.out}"
+        f"{summary['images']} images timed and positioned ({summary['warmups_dropped']} warm-ups dropped)"
+        f"{aux_text}; flagged: {flagged}; written to {args.out}"
     )
     return 0
 
@@ -487,6 +527,46 @@ def _route_build(args) -> int:
     print(f"package: {summary['package']}")
     print(f"qa: {summary['qa']}")
     return 1 if summary["status"] == "fail" else 0
+
+
+def _aux_offset(args) -> int:
+    import pycolmap
+
+    from georoute.auxiliary import AuxiliaryError, estimate_clock_offset
+    from georoute.geodesy import lla_to_ecef
+    from georoute.multisession import doc_frame, load_sessions, session_frame_from
+    from georoute.session import load_session
+
+    try:
+        doc = json.loads(args.images.read_text())
+        entries = {image["path"]: image for image in doc["images"] if image.get("auxiliary")}
+        if not entries:
+            raise AuxiliaryError(f"{args.images} has no auxiliary photos")
+        frame = session_frame_from(args.workspace) if load_sessions(args.workspace) else doc_frame(doc)
+        session = load_session(args.session)
+        if session.datum != frame.datum:
+            raise AuxiliaryError(f"session datum {session.datum} and workspace frame {frame.datum} disagree")
+        which = "refined" if (args.workspace / "sparse" / "refined").is_dir() else "0"
+        model = pycolmap.Reconstruction(args.workspace / "sparse" / which)
+        registered = {
+            model.images[image_id].name: model.images[image_id].projection_center()
+            for image_id in model.reg_image_ids()
+            if model.images[image_id].name in entries
+        }
+        if not registered:
+            raise AuxiliaryError("no auxiliary photo is registered; map the workspace first")
+        aux = {name: (centre, entries[name]["aux_raw_gps_s"]) for name, centre in registered.items()}
+        track = frame.from_ecef(lla_to_ecef(session.pvt.lat_deg, session.pvt.lon_deg, session.pvt.height_m))
+        result = estimate_clock_offset(aux, track, session.pvt.gps_time_s)
+    except (AuxiliaryError, OSError, ValueError, KeyError, RuntimeError) as e:
+        print(f"ERROR {e}", file=sys.stderr)
+        return 1
+    print(
+        f"clock offset {result['offset_s']:+.3f} s from {result['images']} registered auxiliary photos "
+        f"(p10 {result['p10_s']:+.3f}, p90 {result['p90_s']:+.3f}); "
+        f"re-ingest with --aux-clock-offset-s {result['offset_s']:.3f}"
+    )
+    return 0
 
 
 def _splat_export(args) -> int:

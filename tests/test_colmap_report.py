@@ -104,3 +104,23 @@ def test_scale_against_rtk_compares_path_lengths():
     centres = {f"cam2/{k}": np.array([k * 1.001, 0, 0]) for k in range(10)}
     order = {f"cam2/{k}": k for k in range(10)}
     assert scale_against_priors(priors, centres, order, "cam2") == pytest.approx(1.001)
+
+
+def test_auxiliary_cameras_are_exempt_from_the_prior_residual_gate():
+    from georoute.colmap_report import gate
+
+    residuals = {
+        "cam0": {"images": 10, "horizontal_p95_m": 0.08, "vertical_p95_m": 0.02},
+        "cam4": {"images": 5, "horizontal_p95_m": 2.0, "vertical_p95_m": 1.0},
+    }
+    rig = {"cameras": {}}
+    failures = gate(residuals, rig, ["cam0", "cam4"], frozenset({"cam4"}))
+    assert failures == ["cam0 horizontal prior residual p95 8.0 cm exceeds 5 cm"]
+    empty = {"cam4": {"images": 0, "horizontal_p95_m": None, "vertical_p95_m": None}}
+    assert gate(empty, rig, ["cam4"], frozenset({"cam4"})) == []
+    assert gate(empty, rig, ["cam4"]) == ["cam4 has no RTK-fixed images to check against"]
+    assert gate(residuals, rig, ["cam0", "cam4"], frozenset()) == [
+        "cam0 horizontal prior residual p95 8.0 cm exceeds 5 cm",
+        "cam4 horizontal prior residual p95 200.0 cm exceeds 5 cm",
+        "cam4 vertical prior residual p95 100.0 cm exceeds 5 cm",
+    ]

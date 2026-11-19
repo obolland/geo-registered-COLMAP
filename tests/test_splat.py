@@ -299,3 +299,38 @@ def test_a_multi_session_block_holds_out_each_session_and_records_them(tmp_path)
     assert manifest["inputs"]["sessions"][0]["label"] == "s1"
     assert (block / "images_4" / "s2" / "cam0" / "IMG_0012.png").is_file()
     assert pycolmap.Reconstruction(block / "sparse" / "0").num_cameras() == 2
+
+
+def test_auxiliary_images_train_without_a_heldout_pulse():
+    from georoute.splat import split_session_names
+
+    record = {}
+    selected = {}
+    for session in ("s1", "s2"):
+        names = []
+        for pulse in (11, 12, 13):
+            name = f"{session}/cam0/IMG_{pulse:04d}.JPG"
+            record[name] = {"session": session, "camera": 0, "pulse": pulse}
+            names.append(name)
+        aux = f"{session}/cam4/IMG_0001.JPG"
+        record[aux] = {"session": session, "camera": 4, "pulse": None, "auxiliary": True}
+        names.append(aux)
+        selected[session] = names
+    train, heldout, by_session = split_session_names(record, selected, every=2)
+    assert heldout == ["s1/cam0/IMG_0012.JPG", "s2/cam0/IMG_0012.JPG"]
+    assert "s1/cam4/IMG_0001.JPG" in train and "s2/cam4/IMG_0001.JPG" in train
+    assert by_session["s1"]["auxiliary_images"] == 1
+
+
+def test_route_in_record_frame_starts_at_the_first_pulse(tmp_path):
+    from georoute.splat import route_in_record_frame
+
+    route = load_route_path(write_route_package(tmp_path))
+    record = {
+        "cam0/a": {"pulse": 1, "centre": [10.0, 5.0, 1.0]},
+        "cam0/b": {"pulse": 2, "centre": [10.5, 5.0, 1.0]},
+        "cam4/x": {"pulse": None, "centre": [10.0, 6.0, 1.0]},
+    }
+    shifted = route_in_record_frame(route, record)
+    np.testing.assert_allclose(shifted.enu[0, :2], [10.0, 5.0], atol=1e-9)
+    np.testing.assert_allclose(shifted.enu[:, 0] - shifted.enu[0, 0], route.s, atol=1e-9)

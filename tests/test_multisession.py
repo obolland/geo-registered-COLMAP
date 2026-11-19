@@ -308,3 +308,55 @@ def test_report_checks_each_session_against_its_own_rig(tmp_path):
         assert session["scale_against_rtk"] == pytest.approx(1.0)
         assert session["failures"] == []
     assert out["failures"] == []
+
+
+def test_an_older_images_json_without_receiver_velocity_takes_it_from_the_track():
+    images = []
+    for k in range(4):
+        entry = _image(F1.to_ecef([0.8 * k, 0.0, 1.2]), velocity=(0.0, 0.0, 0.0))
+        entry.pop("velocity_enu")
+        entry["path"] = f"cam0/IMG_{k:04d}.JPG"
+        entry["t_mid_gps_s"] = 100.0 + k
+        entry["antenna_enu"] = F1.from_ecef(entry["antenna_ecef"]).tolist()
+        images.append(entry)
+    out = images_in_frame(_doc(F1, images), F1)
+    speed = [np.hypot(*i["velocity_enu"][:2]) for i in out]
+    assert all(abs(s - 0.8) < 1e-6 for s in speed)
+    assert all(i["velocity_enu"][0] > 0 for i in out)
+
+
+def test_auxiliary_poses_are_left_out_of_calibration(tmp_path):
+    from georoute.reconstruct import _poses_for_session
+
+    options = pycolmap.SyntheticDatasetOptions()
+    options.num_rigs = 1
+    options.num_cameras_per_rig = 1
+    options.num_frames_per_rig = 5
+    options.num_points3D = 100
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with pycolmap.Database.open(ws / "database.db") as db:
+        truth = pycolmap.synthesize_dataset(options, db)
+    record = {}
+    for index, image in enumerate(truth.images.values()):
+        image.name = f"s1/cam0/{image.name}"
+        record[image.name] = {
+            "session": "s1",
+            "camera": 0,
+            "pulse": None if index == 0 else index,
+            "centre": image.projection_center().tolist(),
+        }
+    assert len(_poses_for_session(truth, record, "s1")) == 5
+    calibrated = _poses_for_session(truth, record, "s1", include_aux=False)
+    assert len(calibrated) == 4 and all(isinstance(key[0], int) for key in calibrated)
+
+
+def test_a_session_pair_that_fails_to_connect_is_reported_as_zero(tmp_path):
+    from georoute.reconstruct import match
+
+    f1 = LocalFrame.at(51.15875, -4.12440, 208.0, "ETRS89")
+    specs = [_spec(tmp_path / "s1", f1, "s1"), _spec(tmp_path / "s2", f1, "s2")]
+    prepare_sessions(specs, tmp_path / "ws")
+    report = match(tmp_path / "ws", max_neighbors=10, max_distance_m=50)
+    assert report["by_session_pair"]["s1-s2"] == 0
+    assert report["by_session_pair_direction"]["s1-s2"] == {"same": 0, "opposite": 0, "unknown": 0}

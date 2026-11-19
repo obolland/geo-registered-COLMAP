@@ -117,7 +117,12 @@ def _build(workspace, images_json, rig, out, route_id, segment_length_m, build_i
     if "failures" not in registration:
         raise QAError(f"{report_path} has no 'failures' list")
 
-    which, poses, _, _, model = _model_poses(Path(workspace))
+    which, poses, _, record, model = _model_poses(Path(workspace))
+    sessions = {r.get("session") for r in record.values() if r.get("session")}
+    if len(sessions) > 1:
+        raise BuildError(
+            f"workspace holds sessions {sorted(sessions)}; route build needs one session (step 8)"
+        )
     points, point_stats = _road_points(model)
     contacts = road_contacts(rig_poses(poses, data["images"], rig, frame), points, rig, frame)
     path = rider_path(contacts, frame)
